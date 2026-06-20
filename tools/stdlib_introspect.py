@@ -8,13 +8,20 @@ union, the typeshed merge, and the objects.inv coverage diff are later passes.
 
 Stdlib only, no third-party deps. Run:
     python stdlib_introspect.py [-o out.jsonl] [--include-dunders] [--include-private]
+                                [--md-summary PATH] [--min-entities N]
+
+All file I/O is UTF-8. When --md-summary PATH is given (or the env var
+GITHUB_STEP_SUMMARY is set), the same stats are also rendered as Markdown there, so
+the CI job summary is generated in Python and is byte-identical across runners.
+--min-entities is a sanity gate: a build that produces fewer records than that exits
+non-zero (a near-empty dump means something broke, not a real result).
 
 Dunder handling mirrors current docs behavior: per-type dunders are excluded by
 default (the docs cover them in the data model section). Use --include-dunders to
 keep them, flagged with is_dunder=True.
 """
 from __future__ import annotations
-import sys, io, json, inspect, pkgutil, importlib, warnings, argparse, contextlib
+import sys, os, io, json, inspect, pkgutil, importlib, warnings, argparse, contextlib, platform
 
 # --- config ----------------------------------------------------------------
 
@@ -190,6 +197,12 @@ def main():
     ap.add_argument("-o", "--output", default="stdlib_api.jsonl")
     ap.add_argument("--include-dunders", action="store_true")
     ap.add_argument("--include-private", action="store_true")
+    ap.add_argument("--md-summary", metavar="PATH",
+                    help="also write the summary as Markdown here "
+                         "(defaults to $GITHUB_STEP_SUMMARY when that is set)")
+    ap.add_argument("--min-entities", type=int, default=5000,
+                    help="sanity gate: exit non-zero if fewer than N records were "
+                         "produced (a near-empty dump means the build is broken)")
     args = ap.parse_args()
 
     scanned, failed = 0, []
@@ -213,37 +226,93 @@ def main():
             failed.append(f"{name} (walk: {e!r})")
 
     recs = sorted(RECORDS.values(), key=lambda r: r["qualname"])
-    with open(args.output, "w") as f:
+    # UTF-8 explicitly: the default encoding is cp1252 on Windows runners, which
+    # blows up on non-ASCII docstrings. Pin it so every cell behaves identically.
+    with open(args.output, "w", encoding="utf-8") as f:
         for r in recs:
             f.write(json.dumps(r) + "\n")
 
-    _summary(recs, scanned, failed, args.output)
+    stats = _stats(recs, scanned, failed)
+    _text_summary(stats, args.output)              # always, for local/CI logs
+    md_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
+    if md_path:
+        _markdown_summary(stats, args.output, md_path)
 
-def _summary(recs, scanned, failed, out):
+    # Sanity gate last: the output and both summaries are already written, so a
+    # broken cell still uploads its (small) dump and renders a summary for debugging
+    # before the non-zero exit fails the job.
+    if len(recs) < args.min_entities:
+        sys.exit(f"\nSANITY GATE: only {len(recs)} records (< --min-entities "
+                 f"{args.min_entities}); this build looks broken.")
+
+def _stats(recs, scanned, failed):
     from collections import Counter
-    kinds = Counter(r["kind"] for r in recs)
     callables = [r for r in recs if r["kind"] in {"function", "method"}]
-    with_sig = sum(1 for r in callables if r["signature"])
-    with_doc = sum(1 for r in recs if r["doc_resolved"])
-    by_mod = Counter(r["qualname"].split(".")[0] for r in recs)
+    return {
+        "n_recs": len(recs),
+        "scanned": scanned,
+        "failed": failed,
+        "kinds": Counter(r["kind"] for r in recs),
+        "n_callables": len(callables),
+        "with_sig": sum(1 for r in callables if r["signature"]),
+        "with_doc": sum(1 for r in recs if r["doc_resolved"]),
+        "by_mod": Counter(r["qualname"].split(".")[0] for r in recs),
+    }
 
+def _pct(part, whole):
+    return f"{100*part//whole}%" if whole else "n/a"
+
+def _text_summary(s, out):
     print(f"\n=== stdlib introspection summary =========================")
     print(f"Python {sys.version.split()[0]} on {sys.platform}")
-    print(f"modules scanned        : {scanned}  ({len(failed)} not introspectable here)")
-    print(f"total entities         : {len(recs)}")
-    print(f"  by kind              : " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
-    if callables:
-        print(f"callables w/ signature : {with_sig}/{len(callables)}  ({100*with_sig//len(callables)}%)")
-    print(f"entities w/ docstring  : {with_doc}/{len(recs)}  ({100*with_doc//len(recs)}%)")
+    print(f"modules scanned        : {s['scanned']}  ({len(s['failed'])} not introspectable here)")
+    print(f"total entities         : {s['n_recs']}")
+    print(f"  by kind              : " + ", ".join(f"{k}={n}" for k, n in s['kinds'].most_common()))
+    if s['n_callables']:
+        print(f"callables w/ signature : {s['with_sig']}/{s['n_callables']}  ({_pct(s['with_sig'], s['n_callables'])})")
+    if s['n_recs']:
+        print(f"entities w/ docstring  : {s['with_doc']}/{s['n_recs']}  ({_pct(s['with_doc'], s['n_recs'])})")
     print(f"\ntop 12 modules by entity count:")
-    for m, n in by_mod.most_common(12):
+    for m, n in s['by_mod'].most_common(12):
         print(f"  {n:5d}  {m}")
-    if failed:
-        show = ", ".join(failed[:18])
-        more = f"  (+{len(failed)-18} more)" if len(failed) > 18 else ""
-        print(f"\nnot introspectable on this build ({len(failed)}): {show}{more}")
-    print(f"\nwrote {len(recs)} records -> {out}")
+    if s['failed']:
+        show = ", ".join(s['failed'][:18])
+        more = f"  (+{len(s['failed'])-18} more)" if len(s['failed']) > 18 else ""
+        print(f"\nnot introspectable on this build ({len(s['failed'])}): {show}{more}")
+    print(f"\nwrote {s['n_recs']} records -> {out}")
     print("=" * 58)
+
+def _markdown_summary(s, out, path):
+    pyver = sys.version.split()[0]
+    L = [
+        f"## stdlib introspection — Python {pyver} on `{sys.platform}`",
+        "",
+        "| metric | value |",
+        "| --- | --- |",
+        f"| platform | `{platform.platform()}` |",
+        f"| modules scanned | {s['scanned']} |",
+        f"| modules not introspectable | {len(s['failed'])} |",
+        f"| total entities | {s['n_recs']} |",
+    ]
+    if s['n_callables']:
+        L.append(f"| callables w/ signature | {s['with_sig']}/{s['n_callables']} ({_pct(s['with_sig'], s['n_callables'])}) |")
+    L.append(f"| entities w/ docstring | {s['with_doc']}/{s['n_recs']} ({_pct(s['with_doc'], s['n_recs'])}) |")
+
+    L += ["", "### Entities by kind", "", "| kind | count |", "| --- | --- |"]
+    L += [f"| {k} | {n} |" for k, n in s['kinds'].most_common()]
+
+    L += ["", "### Top modules by entity count", "", "| module | entities |", "| --- | --- |"]
+    L += [f"| `{m}` | {n} |" for m, n in s['by_mod'].most_common(12)]
+
+    failed = s['failed']
+    L += ["", f"### Not introspectable on this build ({len(failed)})", ""]
+    L.append(", ".join(f"`{m}`" for m in sorted(failed)) if failed else "_none_")
+    L.append("")
+
+    # Append, not write: $GITHUB_STEP_SUMMARY is an append target by design, and the
+    # file is fresh per step so a local --md-summary run sees a clean file too.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(L) + "\n")
 
 if __name__ == "__main__":
     main()

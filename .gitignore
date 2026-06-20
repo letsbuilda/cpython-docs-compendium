@@ -1,0 +1,6 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Introspection run outputs — artifacts only, never committed (see CI_PLAN §3)
+stdlib_api*.jsonl
