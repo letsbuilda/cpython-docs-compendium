@@ -24,11 +24,11 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 import sphobjinv as soi
 
-Record: TypeAlias = dict[str, Any]
+type Record = dict[str, Any]
 
 INVENTORY_URL = "https://docs.python.org/{version}/objects.inv"
 DEV_INVENTORY_URL = "https://docs.python.org/dev/objects.inv"

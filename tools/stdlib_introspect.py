@@ -148,10 +148,8 @@ def kind_of(entity: object, in_class: bool) -> str:
 def get_signature(entity: object) -> tuple[str | None, str]:
     """Return (signature_text, source) where source is ``inspect``/``text_signature``/``none``."""
     if callable(entity):
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             return str(inspect.signature(entity)), "inspect"
-        except (ValueError, TypeError):
-            pass
     text_signature = getattr(entity, "__text_signature__", None)
     return (text_signature, "text_signature") if text_signature else (None, "none")
 

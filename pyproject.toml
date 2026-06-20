@@ -48,10 +48,13 @@ ignore = [
     "T201",     # CLI tools: the printed report is the deliverable
     "FBT",      # internal recursion helpers; keyword-only bools add churn, not safety
     "PLR0913",  # record/report builders take one parameter per output column by design
-    "PERF203",  # the I/O retry/parse loops are not hot; try/except overhead is negligible
 ]
-"tools/stdlib_introspect.py" = ["BLE001"]  # importing arbitrary stdlib modules; broad except is the point
-"tools/coverage_diff.py" = ["S310"]        # fetches a fixed https://docs.python.org inventory URL
+# stdlib_introspect runs across the whole introspect matrix (older interpreters
+# included), so it keeps back-compatible idioms: TypeAlias over the newer `type`
+# statement (UP040). It also imports arbitrary modules, where a broad except is
+# intentional (BLE001).
+"tools/stdlib_introspect.py" = ["BLE001", "UP040"]
+"tools/coverage_diff.py" = ["S310"]  # fetches a fixed https://docs.python.org inventory URL
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

@@ -1,5 +1,0 @@
-# These scripts run across the stdlib-introspect matrix, whose floor predates the
-# repo's dev requirement -- so lint them at that floor. Otherwise Ruff would push
-# idioms the oldest matrix interpreters cannot parse (e.g. UP040's `type` statement).
-extend = "../pyproject.toml"
-target-version = "py310"
