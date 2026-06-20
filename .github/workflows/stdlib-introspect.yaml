@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       target_version:
-        description: "Latest stable minor for the coverage backlog (bump with the matrix)"
+        description: "Latest stable minor for the docs.python.org coverage gap (bump with the matrix)"
         type: string
         default: "3.14"
 
@@ -103,8 +103,8 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  coverage:
-    name: docs coverage
+  official-docs-coverage:
+    name: docs.python.org coverage gap
     needs: [aggregate]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -127,17 +127,17 @@ jobs:
         with:
           name: stdlib_api_union.jsonl
 
-      - name: Coverage diff
+      - name: Diff stdlib API against docs.python.org
         run: |
           echo "running: tools/coverage_diff.py stdlib_api_union.jsonl --target-version $TARGET_VERSION"
           # Iterates every version in the union internally, fetching each one's inventory;
-          # writes the $GITHUB_STEP_SUMMARY coverage report.
+          # writes the $GITHUB_STEP_SUMMARY report of what the official docs are missing.
           python tools/coverage_diff.py stdlib_api_union.jsonl --target-version "$TARGET_VERSION"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          path: coverage_by_version.json
+          path: official_docs_coverage_by_version.json
           archive: false
           retention-days: 30
           if-no-files-found: warn
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          path: backlog_${{ env.TARGET_VERSION }}.jsonl
+          path: official_docs_gap_${{ env.TARGET_VERSION }}.jsonl
           archive: false
           retention-days: 30
           if-no-files-found: warn
