@@ -15,8 +15,8 @@ Outputs:
     of cells (os-family + python version) it appeared in, plus added_in/removed_in
     derived from the OS-collapsed version presence.
   * a Markdown report to $GITHUB_STEP_SUMMARY (or --md-summary PATH): union size,
-    per-cell counts, platform-exclusive API counts, a Windows-only sample, and the
-    per-adjacent-minor added/removed deltas (OS-collapsed) across the matrix.
+    per-cell counts, platform-exclusive API counts, and the per-adjacent-minor
+    added/removed deltas (OS-collapsed) across the matrix.
 
 Stdlib only, no third-party deps. All file I/O is UTF-8.
     python merge_summary.py CELLS_DIR [-o stdlib_api_union.jsonl] [--md-summary PATH]
@@ -34,7 +34,6 @@ from collections import defaultdict
 # the version no underscore, so a non-greedy split on the single "_py" is unambiguous.
 CELL_PATTERN = re.compile(r"^stdlib_api_(?P<os>.+?)_py(?P<ver>[^_]+)\.jsonl$")
 FAMILY_ORDER = {"linux": 0, "macos": 1, "windows": 2}
-MAX_SAMPLE_ROWS = 25
 
 
 def os_family(label):
@@ -171,19 +170,10 @@ def main():
         removed = [qualname for qualname in union if earlier in present_version_keys[qualname] and later not in present_version_keys[qualname]]
         transitions.append((earlier, later, added, removed))
 
-    report(cells, union, union_records, exclusive, families, transitions, version_keys, args)
+    report(cells, union, exclusive, families, transitions, version_keys, args)
 
 
-def _sample_table(lines, title, qualnames, union_records):
-    lines += [f"### {title} ({len(qualnames)})", "", "| qualname | kind |", "| --- | --- |"]
-    for qualname in sorted(qualnames)[:MAX_SAMPLE_ROWS]:
-        lines.append(f"| `{qualname}` | {union_records[qualname].get('kind', '?')} |")
-    if len(qualnames) > MAX_SAMPLE_ROWS:
-        lines.append(f"| … (+{len(qualnames) - MAX_SAMPLE_ROWS} more) | |")
-    lines.append("")
-
-
-def report(cells, union, union_records, exclusive, families, transitions, version_keys, args):
+def report(cells, union, exclusive, families, transitions, version_keys, args):
     rows = sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99)))
 
     lines = ["# stdlib introspection — cross-platform union", ""]
@@ -208,10 +198,6 @@ def report(cells, union, union_records, exclusive, families, transitions, versio
             lines.append(f"| {family} | {len(exclusive.get(family, []))} |")
         lines.append("")
 
-        windows_only = exclusive.get("windows", [])
-        if windows_only:
-            _sample_table(lines, "Windows-only sample", windows_only, union_records)
-
         if transitions:
             floor_label = format_version(version_keys[0])
             lines += ["## Per-version deltas (OS-collapsed, adjacent minors)", "",
@@ -222,12 +208,6 @@ def report(cells, union, union_records, exclusive, families, transitions, versio
             for earlier, later, added, removed in transitions:
                 lines.append(f"| {format_version(earlier)} → {format_version(later)} | {len(added)} | {len(removed)} |")
             lines.append("")
-            for earlier, later, added, removed in transitions:
-                label = f"{format_version(earlier)} → {format_version(later)}"
-                if added:
-                    _sample_table(lines, f"Added in {label}", added, union_records)
-                if removed:
-                    _sample_table(lines, f"Removed in {label}", removed, union_records)
         else:
             lines += ["## Per-version deltas", "",
                       "_Need at least two Python minors in the matrix to compute deltas._", ""]
