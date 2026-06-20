@@ -154,9 +154,6 @@ def diff_version(union, version, inventory_dir):
     for bucket in by_module.values():
         bucket["coverage_pct"] = percent(bucket["covered"], bucket["surface"])
 
-    # JSON keys are kept stable for the artifact schema: "documented" is the count
-    # documented upstream, "backlog" is the count missing from the official docs
-    # (the docs.python.org gap).
     summary = {
         "surface": len(surface_names),
         "documented": len(documented_upstream),
