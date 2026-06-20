@@ -26,47 +26,47 @@ from collections import defaultdict
 
 # Filenames look like stdlib_api_ubuntu-latest_py3.14.jsonl. The os has no "_py" and
 # the version no underscore, so a non-greedy split on the single "_py" is unambiguous.
-CELL_RE = re.compile(r"^stdlib_api_(?P<os>.+?)_py(?P<ver>[^_]+)\.jsonl$")
-FAM_ORDER = {"linux": 0, "macos": 1, "windows": 2}
-SAMPLE = 25     # cap rows in the Markdown sample tables
+CELL_PATTERN = re.compile(r"^stdlib_api_(?P<os>.+?)_py(?P<ver>[^_]+)\.jsonl$")
+FAMILY_ORDER = {"linux": 0, "macos": 1, "windows": 2}
+MAX_SAMPLE_ROWS = 25
 
 
 def os_family(label):
-    o = label.lower()
-    if o.startswith(("ubuntu", "linux")):        return "linux"
-    if o.startswith(("macos", "mac", "darwin")): return "macos"
-    if o.startswith(("windows", "win")):         return "windows"
-    return o
+    lowered = label.lower()
+    if lowered.startswith(("ubuntu", "linux")):        return "linux"
+    if lowered.startswith(("macos", "mac", "darwin")): return "macos"
+    if lowered.startswith(("windows", "win")):         return "windows"
+    return lowered
 
-def ver_key(v):
+def version_key(version):
     """'3.14' -> (3, 14); tolerant of '3.15.0a1' and junk."""
-    nums = re.findall(r"\d+", v)
-    return tuple(int(n) for n in nums[:2]) if nums else (0,)
+    numbers = re.findall(r"\d+", version)
+    return tuple(int(number) for number in numbers[:2]) if numbers else (0,)
 
-def fmt_ver(vk):
-    return ".".join(str(n) for n in vk)
+def format_version(version_tuple):
+    return ".".join(str(part) for part in version_tuple)
 
 
 class Cell:
-    def __init__(self, path, os_label, ver):
+    def __init__(self, path, os_label, version):
         self.path = path
         self.os_label = os_label
         self.family = os_family(os_label)
-        self.ver = ver
-        self.vk = ver_key(ver)
-        self.cell_id = f"{self.family}-py{ver}"
+        self.version = version
+        self.version_key = version_key(version)
+        self.cell_id = f"{self.family}-py{version}"
         self.records = {}       # qualname -> record (last wins within a cell)
         self.malformed = 0
 
     def load(self):
-        with open(self.path, encoding="utf-8") as f:
-            for line in f:
+        with open(self.path, encoding="utf-8") as source_file:
+            for line in source_file:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    rec = json.loads(line)
-                    self.records[rec["qualname"]] = rec
+                    record = json.loads(line)
+                    self.records[record["qualname"]] = record
                 except (json.JSONDecodeError, KeyError, TypeError):
                     self.malformed += 1     # tolerate a half-written dump from a crashed cell
 
@@ -74,146 +74,146 @@ class Cell:
 def discover(cells_dir):
     cells = []
     for path in sorted(glob.glob(os.path.join(cells_dir, "stdlib_api_*_py*.jsonl"))):
-        m = CELL_RE.match(os.path.basename(path))
-        if not m:
+        match = CELL_PATTERN.match(os.path.basename(path))
+        if not match:
             print(f"  ! unrecognized file name, skipping: {path}", file=sys.stderr)
             continue
-        c = Cell(path, m["os"], m["ver"])
-        c.load()
-        cells.append(c)
+        cell = Cell(path, match["os"], match["ver"])
+        cell.load()
+        cells.append(cell)
     return cells
 
 
 def aggregate(cells):
-    present_cells = defaultdict(set)    # qualname -> {cell_id}
-    present_fam = defaultdict(set)      # qualname -> {family}
-    present_vk = defaultdict(set)       # qualname -> {version_key}
-    for c in cells:
-        for qn in c.records:
-            present_cells[qn].add(c.cell_id)
-            present_fam[qn].add(c.family)
-            present_vk[qn].add(c.vk)
+    present_cells = defaultdict(set)            # qualname -> {cell_id}
+    present_families = defaultdict(set)         # qualname -> {family}
+    present_version_keys = defaultdict(set)     # qualname -> {version_key}
+    for cell in cells:
+        for qualname in cell.records:
+            present_cells[qualname].add(cell.cell_id)
+            present_families[qualname].add(cell.family)
+            present_version_keys[qualname].add(cell.version_key)
 
     union = sorted(present_cells)
 
     # Walk cells oldest -> newest and let the newer cell overwrite, so the union's base
     # record carries the newest minor's signature/docstring.
-    union_rec = {}
-    for c in sorted(cells, key=lambda c: (c.vk, FAM_ORDER.get(c.family, 99))):
-        for qn, rec in c.records.items():
-            union_rec[qn] = rec
-    for qn in union:
-        rec = dict(union_rec[qn])
-        rec["cells"] = sorted(present_cells[qn])
-        rec["n_cells"] = len(rec["cells"])
-        union_rec[qn] = rec
+    union_records = {}
+    for cell in sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99))):
+        for qualname, record in cell.records.items():
+            union_records[qualname] = record
+    for qualname in union:
+        record = dict(union_records[qualname])
+        record["cells"] = sorted(present_cells[qualname])
+        record["n_cells"] = len(record["cells"])
+        union_records[qualname] = record
 
-    return union, union_rec, present_fam, present_vk
+    return union, union_records, present_families, present_version_keys
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cells_dir", help="directory of stdlib_api_<os>_py<ver>.jsonl files")
-    ap.add_argument("-o", "--output", default="stdlib_api_union.jsonl")
-    ap.add_argument("--md-summary", metavar="PATH",
-                    help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("cells_dir", help="directory of stdlib_api_<os>_py<ver>.jsonl files")
+    parser.add_argument("-o", "--output", default="stdlib_api_union.jsonl")
+    parser.add_argument("--md-summary", metavar="PATH",
+                        help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)")
+    args = parser.parse_args()
 
     cells = discover(args.cells_dir)
-    union, union_rec, present_fam, present_vk = aggregate(cells)
+    union, union_records, present_families, present_version_keys = aggregate(cells)
 
     # Always write the union file (even empty) so the upload step has an artifact;
     # newline="\n" so the artifact is byte-identical regardless of which runner ran us.
-    with open(args.output, "w", encoding="utf-8", newline="\n") as f:
-        for qn in union:
-            f.write(json.dumps(union_rec[qn]) + "\n")
+    with open(args.output, "w", encoding="utf-8", newline="\n") as out_file:
+        for qualname in union:
+            out_file.write(json.dumps(union_records[qualname]) + "\n")
 
     # Platform-exclusive: present on exactly one OS family across the matrix.
-    families = sorted({c.family for c in cells}, key=lambda fm: FAM_ORDER.get(fm, 99))
-    exclusive = {fm: [] for fm in families}
-    for qn in union:
-        fams = present_fam[qn]
-        if len(fams) == 1:
-            exclusive.setdefault(next(iter(fams)), []).append(qn)
+    families = sorted({cell.family for cell in cells}, key=lambda family: FAMILY_ORDER.get(family, 99))
+    exclusive = {family: [] for family in families}
+    for qualname in union:
+        families_present = present_families[qualname]
+        if len(families_present) == 1:
+            exclusive.setdefault(next(iter(families_present)), []).append(qualname)
 
     # Deltas between the oldest and newest minor actually present.
-    vks = sorted({c.vk for c in cells})
+    version_keys = sorted({cell.version_key for cell in cells})
     added, removed, oldest, newest = [], [], None, None
-    if len(vks) >= 2:
-        oldest, newest = vks[0], vks[-1]
-        added = [qn for qn in union if newest in present_vk[qn] and oldest not in present_vk[qn]]
-        removed = [qn for qn in union if oldest in present_vk[qn] and newest not in present_vk[qn]]
+    if len(version_keys) >= 2:
+        oldest, newest = version_keys[0], version_keys[-1]
+        added = [qualname for qualname in union if newest in present_version_keys[qualname] and oldest not in present_version_keys[qualname]]
+        removed = [qualname for qualname in union if oldest in present_version_keys[qualname] and newest not in present_version_keys[qualname]]
 
-    report(cells, union, union_rec, exclusive, families, added, removed, oldest, newest, args)
+    report(cells, union, union_records, exclusive, families, added, removed, oldest, newest, args)
 
 
-def _sample_table(lines, title, qualnames, union_rec):
+def _sample_table(lines, title, qualnames, union_records):
     lines += [f"### {title} ({len(qualnames)})", "", "| qualname | kind |", "| --- | --- |"]
-    for qn in sorted(qualnames)[:SAMPLE]:
-        lines.append(f"| `{qn}` | {union_rec[qn].get('kind', '?')} |")
-    if len(qualnames) > SAMPLE:
-        lines.append(f"| … (+{len(qualnames) - SAMPLE} more) | |")
+    for qualname in sorted(qualnames)[:MAX_SAMPLE_ROWS]:
+        lines.append(f"| `{qualname}` | {union_records[qualname].get('kind', '?')} |")
+    if len(qualnames) > MAX_SAMPLE_ROWS:
+        lines.append(f"| … (+{len(qualnames) - MAX_SAMPLE_ROWS} more) | |")
     lines.append("")
 
 
-def report(cells, union, union_rec, exclusive, families, added, removed, oldest, newest, args):
-    rows = sorted(cells, key=lambda c: (c.vk, FAM_ORDER.get(c.family, 99)))
+def report(cells, union, union_records, exclusive, families, added, removed, oldest, newest, args):
+    rows = sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99)))
 
-    L = ["# stdlib introspection — cross-platform union", ""]
+    lines = ["# stdlib introspection — cross-platform union", ""]
     if not cells:
-        L += ["> **No cell artifacts were found.** Every matrix cell failed to produce a dump, or the download step pulled nothing.", ""]
+        lines += ["> **No cell artifacts were found.** Every matrix cell failed to produce a dump, or the download step pulled nothing.", ""]
     else:
-        vers = sorted({fmt_ver(c.vk) for c in cells}, key=ver_key)
-        L += [f"Aggregated **{len(cells)}** cells — families: {', '.join(families)}; Python: {', '.join(vers)}.", "",
-              f"**Union surface: {len(union)} unique qualnames.**", ""]
+        versions = sorted({format_version(cell.version_key) for cell in cells}, key=version_key)
+        lines += [f"Aggregated **{len(cells)}** cells — families: {', '.join(families)}; Python: {', '.join(versions)}.", "",
+                  f"**Union surface: {len(union)} unique qualnames.**", ""]
 
-        L += ["## Per-cell entity counts", "",
-              "| cell | os | python | entities |", "| --- | --- | --- | ---: |"]
-        for c in rows:
-            note = f" ⚠️ {c.malformed} bad lines" if c.malformed else ""
-            L.append(f"| `{c.cell_id}` | {c.os_label} | {c.ver} | {len(c.records)}{note} |")
-        L.append("")
+        lines += ["## Per-cell entity counts", "",
+                  "| cell | os | python | entities |", "| --- | --- | --- | ---: |"]
+        for cell in rows:
+            note = f" ⚠️ {cell.malformed} bad lines" if cell.malformed else ""
+            lines.append(f"| `{cell.cell_id}` | {cell.os_label} | {cell.version} | {len(cell.records)}{note} |")
+        lines.append("")
 
-        L += ["## Platform-exclusive APIs", "",
-              "Qualnames that appear on exactly one OS family across the whole matrix.", "",
-              "| platform | exclusive qualnames |", "| --- | ---: |"]
-        for fm in families:
-            L.append(f"| {fm} | {len(exclusive.get(fm, []))} |")
-        L.append("")
+        lines += ["## Platform-exclusive APIs", "",
+                  "Qualnames that appear on exactly one OS family across the whole matrix.", "",
+                  "| platform | exclusive qualnames |", "| --- | ---: |"]
+        for family in families:
+            lines.append(f"| {family} | {len(exclusive.get(family, []))} |")
+        lines.append("")
 
-        win = exclusive.get("windows", [])
-        if win:
-            _sample_table(L, "Windows-only sample", win, union_rec)
+        windows_only = exclusive.get("windows", [])
+        if windows_only:
+            _sample_table(lines, "Windows-only sample", windows_only, union_records)
 
         if oldest is not None:
-            lo, hi = fmt_ver(oldest), fmt_ver(newest)
-            L += [f"## Version deltas ({lo} → {hi})", "",
-                  f"- **Added** — present on {hi}, absent on {lo}: **{len(added)}**",
-                  f"- **Removed** — present on {lo}, absent on {hi}: **{len(removed)}**", ""]
+            oldest_label, newest_label = format_version(oldest), format_version(newest)
+            lines += [f"## Version deltas ({oldest_label} → {newest_label})", "",
+                      f"- **Added** — present on {newest_label}, absent on {oldest_label}: **{len(added)}**",
+                      f"- **Removed** — present on {oldest_label}, absent on {newest_label}: **{len(removed)}**", ""]
             if added:
-                _sample_table(L, f"Added since {lo}", added, union_rec)
+                _sample_table(lines, f"Added since {oldest_label}", added, union_records)
             if removed:
-                _sample_table(L, f"Removed by {hi}", removed, union_rec)
+                _sample_table(lines, f"Removed by {newest_label}", removed, union_records)
         else:
-            L += ["## Version deltas", "",
-                  "_Need at least two Python minors in the matrix to compute deltas._", ""]
+            lines += ["## Version deltas", "",
+                      "_Need at least two Python minors in the matrix to compute deltas._", ""]
 
-    md_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
-    if md_path:
-        with open(md_path, "a", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(L) + "\n")
+    markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
+    if markdown_path:
+        with open(markdown_path, "a", encoding="utf-8", newline="\n") as summary_file:
+            summary_file.write("\n".join(lines) + "\n")
 
     print(f"\n=== union summary ========================================")
     print(f"aggregated {len(cells)} cells -> {len(union)} unique qualnames")
-    for c in rows:
-        extra = f"  ({c.malformed} malformed lines)" if c.malformed else ""
-        print(f"  {c.cell_id:18s} {len(c.records):6d} entities{extra}")
-    for fm in families:
-        print(f"  {fm}-exclusive APIs : {len(exclusive.get(fm, []))}")
+    for cell in rows:
+        extra = f"  ({cell.malformed} malformed lines)" if cell.malformed else ""
+        print(f"  {cell.cell_id:18s} {len(cell.records):6d} entities{extra}")
+    for family in families:
+        print(f"  {family}-exclusive APIs : {len(exclusive.get(family, []))}")
     if oldest is not None:
         print(f"  added {len(added)} / removed {len(removed)}  "
-              f"({fmt_ver(oldest)} -> {fmt_ver(newest)})")
+              f"({format_version(oldest)} -> {format_version(newest)})")
     print(f"wrote {len(union)} records -> {args.output}")
     print("=" * 58)
 
