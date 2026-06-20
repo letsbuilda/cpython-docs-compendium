@@ -1,0 +1,46 @@
+[project]
+name = "cpython-docs-compendium"
+version = "2026.06.20"
+authors = [
+    { name = "Bradley Reynolds", email = "bradley.reynolds@tailstory.dev" },
+]
+requires-python = ">=3.14"
+
+[dependency-groups]
+dev = [
+    # DX
+    "nox>=2026.4.10",
+    "prek>=0.4.4",
+    # Linters
+    "ruff>=0.15.17",
+    "mypy>=2.1.0",
+    "ty>=0.0.49",
+]
+
+[tool.uv]
+# Sync with Dependabot's uv version
+required-version = ">=0.11.8"
+exclude-newer = "P7D"
+
+[tool.ruff]
+line-length = 120
+cache-dir = ".cache/ruff"
+
+[tool.ruff.lint]
+select = [
+    "ALL",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.mypy]
+pretty = true
+num_workers = 4
+native_parser = true # required by num_workers
+plugins = ["pydantic.mypy"]
+cache_dir = ".cache/mypy"
+
+# Still need to tell Mypy to ignore these
+[tool.ty.rules]
+unused-ignore-comment = "ignore"

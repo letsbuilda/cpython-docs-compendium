@@ -14,12 +14,14 @@ headline artifact.
 The inventory carries no version metadata, so it cannot say when an entity was
 added/removed -- those deltas come from the matrix (merge_summary.py), not here.
 """
+
 from __future__ import annotations
+
+import argparse
+import json
 import os
 import re
-import json
 import time
-import argparse
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -42,8 +44,11 @@ PREFIX_ALIASES = {
     "nt.": "os.",
 }
 MODULE_ALIASES = {
-    "posixpath": "os.path", "ntpath": "os.path", "genericpath": "os.path",
-    "posix": "os", "nt": "os",
+    "posixpath": "os.path",
+    "ntpath": "os.path",
+    "genericpath": "os.path",
+    "posix": "os",
+    "nt": "os",
 }
 
 CELL_VERSION = re.compile(r"-py([0-9][^-]*)$")
@@ -54,23 +59,28 @@ def version_key(version):
     numbers = re.findall(r"\d+", version)
     return tuple(int(number) for number in numbers[:2]) if numbers else (0,)
 
+
 def version_label(version):
     return ".".join(str(part) for part in version_key(version))
+
 
 def cell_version(cell):
     match = CELL_VERSION.search(cell)
     return version_label(match.group(1)) if match else None
+
 
 def normalize(qualname):
     if qualname in MODULE_ALIASES:
         return MODULE_ALIASES[qualname]
     for prefix, replacement in PREFIX_ALIASES.items():
         if qualname.startswith(prefix):
-            return replacement + qualname[len(prefix):]
+            return replacement + qualname[len(prefix) :]
     return qualname
+
 
 def normalize_module(module):
     return MODULE_ALIASES.get(module, module)
+
 
 def percent(part, whole):
     return round(100 * part / whole, 1) if whole else 0.0
@@ -93,11 +103,11 @@ def http_get(url, attempts=4):
             with urllib.request.urlopen(request, timeout=30) as response:
                 return response.read()
         except urllib.error.HTTPError:
-            raise                              # 4xx/5xx: caller decides (404 -> dev fallback)
+            raise  # 4xx/5xx: caller decides (404 -> dev fallback)
         except urllib.error.URLError:
             if attempt == attempts - 1:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
     raise ValueError("attempts must be >= 1")
 
 
@@ -115,7 +125,7 @@ def documented_names(version, inventory_dir=None):
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-        data = http_get(DEV_INVENTORY_URL)     # in-dev minor with no numbered inventory yet
+        data = http_get(DEV_INVENTORY_URL)  # in-dev minor with no numbered inventory yet
         used_dev = True
     inventory = soi.Inventory(zlib=data)
     return {obj.name for obj in inventory.objects if obj.domain == "py"}, used_dev
@@ -171,14 +181,16 @@ def gap_records(surface, missing_from_official_docs):
     rows = []
     for name in missing_from_official_docs:
         record = surface[name]
-        rows.append({
-            "qualname": name,
-            "kind": record["kind"],
-            "module": normalize_module(record["module"]),
-            "signature": record.get("signature"),
-            "has_docstring": bool(record.get("doc_resolved")),
-            "is_data": record["kind"] == "data",
-        })
+        rows.append(
+            {
+                "qualname": name,
+                "kind": record["kind"],
+                "module": normalize_module(record["module"]),
+                "signature": record.get("signature"),
+                "has_docstring": bool(record.get("doc_resolved")),
+                "is_data": record["kind"] == "data",
+            },
+        )
     rows.sort(key=lambda row: (row["module"], row["qualname"]))
     return rows
 
@@ -188,23 +200,27 @@ def default_target(versions):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("union", help="stdlib_api_union.jsonl from the aggregate job")
-    parser.add_argument("--target-version", help="minor to build the docs.python.org gap for "
-                        "(default: latest stable = second-highest in the matrix)")
+    parser.add_argument(
+        "--target-version",
+        help="minor to build the docs.python.org gap for (default: latest stable = second-highest in the matrix)",
+    )
     parser.add_argument("-o", "--output", default="official_docs_coverage_by_version.json")
     parser.add_argument("--gap-out", metavar="PATH", help="default: official_docs_gap_<target>.jsonl")
-    parser.add_argument("--inventory-dir", metavar="DIR",
-                        help="read <minor>.inv from here before fetching (offline/cached runs)")
-    parser.add_argument("--md-summary", metavar="PATH",
-                        help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)")
+    parser.add_argument(
+        "--inventory-dir", metavar="DIR", help="read <minor>.inv from here before fetching (offline/cached runs)",
+    )
+    parser.add_argument(
+        "--md-summary", metavar="PATH", help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)",
+    )
     args = parser.parse_args()
 
     union = load_union(args.union)
-    versions = sorted({cell_version(cell) for record in union
-                       for cell in record.get("cells", []) if cell_version(cell)},
-                      key=version_key)
+    versions = sorted(
+        {cell_version(cell) for record in union for cell in record.get("cells", []) if cell_version(cell)},
+        key=version_key,
+    )
 
     results, surfaces, gaps, docs_onlys = {}, {}, {}, {}
     for version in versions:
@@ -212,9 +228,11 @@ def main():
         results[version] = summary
         surfaces[version], gaps[version], docs_onlys[version] = surface, missing, docs_only
         flag = "  [dev fallback]" if summary["used_dev_fallback"] else ""
-        print(f"  {version:8s} surface={summary['surface']:6d} covered={summary['covered']:6d} "
-              f"missing={summary['backlog']:6d} docs-only={summary['docs_only']:6d} "
-              f"({summary['coverage_pct']}%)" + flag)
+        print(
+            f"  {version:8s} surface={summary['surface']:6d} covered={summary['covered']:6d} "
+            f"missing={summary['backlog']:6d} docs-only={summary['docs_only']:6d} "
+            f"({summary['coverage_pct']}%)" + flag,
+        )
 
     target = args.target_version or (default_target(versions) if versions else None)
 
@@ -226,58 +244,78 @@ def main():
     gap_path = args.gap_out or f"official_docs_gap_{target}.jsonl"
     rows = gap_records(surfaces.get(target, {}), gaps.get(target, set()))
     with open(gap_path, "w", encoding="utf-8", newline="\n") as out_file:
-        for row in rows:
-            out_file.write(json.dumps(row) + "\n")
+        out_file.writelines(json.dumps(row) + "\n" for row in rows)
 
-    report(versions, results, target, rows, docs_onlys.get(target, set()),
-           args.output, gap_path, args)
+    report(versions, results, target, rows, docs_onlys.get(target, set()), args.output, gap_path, args)
 
 
 def report(versions, results, target, gap_rows, docs_only, output_path, gap_path, args):
     data_entries = sum(1 for row in gap_rows if row["is_data"])
     lines = ["# docs.python.org coverage — stdlib API missing from the official reference", ""]
     if not versions:
-        no_versions = ("> **No versions found in the union.** The aggregate step produced "
-                       "no cells, or the union schema is missing `cells`.")
+        no_versions = (
+            "> **No versions found in the union.** The aggregate step produced "
+            "no cells, or the union schema is missing `cells`."
+        )
         lines += [no_versions, ""]
     else:
-        intro = ("Each `undocumented` count is the introspected stdlib surface minus "
-                 "docs.python.org's `py` inventory, per minor (OS-unioned) — the API the "
-                 "official CPython reference does not document. The inventory has no version "
-                 "metadata; added/removed deltas come from the matrix, not from here.")
-        lines += [f"Target version (gap): **{target}**.", "", intro, "",
-                  "## Coverage by version", "",
-                  "| version | surface | covered | undocumented | docs-only | coverage |",
-                  "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        intro = (
+            "Each `undocumented` count is the introspected stdlib surface minus "
+            "docs.python.org's `py` inventory, per minor (OS-unioned) — the API the "
+            "official CPython reference does not document. The inventory has no version "
+            "metadata; added/removed deltas come from the matrix, not from here."
+        )
+        lines += [
+            f"Target version (gap): **{target}**.",
+            "",
+            intro,
+            "",
+            "## Coverage by version",
+            "",
+            "| version | surface | covered | undocumented | docs-only | coverage |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
         for version in versions:
             stats = results[version]
             marks = " ⭐" if version == target else (" (dev)" if stats["used_dev_fallback"] else "")
-            lines.append(f"| {version}{marks} | {stats['surface']} | {stats['covered']} "
-                         f"| {stats['backlog']} | {stats['docs_only']} | {stats['coverage_pct']}% |")
+            lines.append(
+                f"| {version}{marks} | {stats['surface']} | {stats['covered']} "
+                f"| {stats['backlog']} | {stats['docs_only']} | {stats['coverage_pct']}% |",
+            )
         lines.append("")
 
-        lines += [f"## Missing from the official {target} docs — {len(gap_rows)} undocumented", "",
-                  f"Reference-entry core (callables/classes/etc.): **{len(gap_rows) - data_entries}**; "
-                  f"`data` entries: **{data_entries}**.", "",
-                  "| kind | count |", "| --- | ---: |"]
+        lines += [
+            f"## Missing from the official {target} docs — {len(gap_rows)} undocumented",
+            "",
+            f"Reference-entry core (callables/classes/etc.): **{len(gap_rows) - data_entries}**; "
+            f"`data` entries: **{data_entries}**.",
+            "",
+            "| kind | count |",
+            "| --- | ---: |",
+        ]
         for kind, count in Counter(row["kind"] for row in gap_rows).most_common():
             lines.append(f"| {kind} | {count} |")
         lines.append("")
 
         module_stats = results.get(target, {}).get("by_module", {})
         per_module = Counter(row["module"] for row in gap_rows)
-        lines += [f"## Top {TOP_MODULES} modules by undocumented count ({target})", "",
-                  "| module | undocumented | surface | coverage |", "| --- | ---: | ---: | ---: |"]
+        lines += [
+            f"## Top {TOP_MODULES} modules by undocumented count ({target})",
+            "",
+            "| module | undocumented | surface | coverage |",
+            "| --- | ---: | ---: | ---: |",
+        ]
         for module, count in per_module.most_common(TOP_MODULES):
             stats = module_stats.get(module, {})
-            lines.append(f"| `{module}` | {count} | {stats.get('surface', '?')} "
-                         f"| {stats.get('coverage_pct', '?')}% |")
+            lines.append(f"| `{module}` | {count} | {stats.get('surface', '?')} | {stats.get('coverage_pct', '?')}% |")
         lines.append("")
 
         if docs_only:
-            docs_only_note = ("In the official docs inventory but not introspected: removed/renamed "
-                              "API docs.python.org still lists, or names this run failed to "
-                              "enumerate (normalization QA signal).")
+            docs_only_note = (
+                "In the official docs inventory but not introspected: removed/renamed "
+                "API docs.python.org still lists, or names this run failed to "
+                "enumerate (normalization QA signal)."
+            )
             lines += [f"## Docs-only — {target} ({len(docs_only)})", "", docs_only_note, ""]
 
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")

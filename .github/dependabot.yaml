@@ -8,3 +8,29 @@ updates:
       ci-dependencies:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: uv
+    directories:
+      - /
+      - packages/*
+    schedule:
+      interval: monthly
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      pre-commit-dependencies:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
