@@ -218,11 +218,11 @@ def report(
 
     lines = ["# stdlib introspection — cross-platform union", ""]
     if not cells:
-        lines += [
+        no_cells = (
             "> **No cell artifacts were found.** Every matrix cell failed to produce "
-            "a dump, or the download step pulled nothing.",
-            "",
-        ]
+            "a dump, or the download step pulled nothing."
+        )
+        lines += [no_cells, ""]
     else:
         versions = sorted({format_version(cell.version_key) for cell in cells}, key=version_key)
         lines += [
@@ -252,12 +252,15 @@ def report(
 
         if transitions:
             floor_label = format_version(version_keys[0])
+            deltas_intro = (
+                f"An entity is present in a minor if it appears in **any** OS cell for it. "
+                f"`added_in` for entities already present in {floor_label} is recorded as "
+                f"`<={floor_label}` — the matrix floor bounds it."
+            )
             lines += [
                 "## Per-version deltas (OS-collapsed, adjacent minors)",
                 "",
-                f"An entity is present in a minor if it appears in **any** OS cell for it. "
-                f"`added_in` for entities already present in {floor_label} is recorded as "
-                f"`<={floor_label}` — the matrix floor bounds it.",
+                deltas_intro,
                 "",
                 "| transition | added | removed |",
                 "| --- | ---: | ---: |",

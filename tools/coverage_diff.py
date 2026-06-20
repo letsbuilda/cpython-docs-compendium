@@ -108,6 +108,9 @@ def load_union(path: str) -> list[Record]:
 
 def http_get(url: str, attempts: int = 4) -> bytes:
     """GET ``url``, retrying transient URL errors with exponential backoff."""
+    if attempts < 1:
+        message = "attempts must be >= 1"
+        raise ValueError(message)
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "coverage-diff"})
@@ -120,7 +123,7 @@ def http_get(url: str, attempts: int = 4) -> bytes:
             if attempt == attempts - 1:
                 raise
             time.sleep(2**attempt)
-    raise AssertionError  # unreachable while attempts >= 1
+    raise AssertionError  # unreachable: the guard forces attempts >= 1, so the last attempt returns or raises
 
 
 def documented_names(version: str, inventory_dir: str | None = None) -> tuple[set[str], bool]:
@@ -324,11 +327,14 @@ def report(
             )
         lines.append("")
 
+        core_breakdown = (
+            f"Reference-entry core (callables/classes/etc.): **{len(gap_rows) - data_entries}**; "
+            f"`data` entries: **{data_entries}**."
+        )
         lines += [
             f"## Missing from the official {target} docs — {len(gap_rows)} undocumented",
             "",
-            f"Reference-entry core (callables/classes/etc.): **{len(gap_rows) - data_entries}**; "
-            f"`data` entries: **{data_entries}**.",
+            core_breakdown,
             "",
             "| kind | count |",
             "| --- | ---: |",
