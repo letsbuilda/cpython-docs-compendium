@@ -4,3 +4,5 @@ __pycache__/
 
 # Introspection run outputs — artifacts only, never committed (see CI_PLAN §3)
 stdlib_api*.jsonl
+coverage_by_version.json
+backlog_*.jsonl

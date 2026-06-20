@@ -12,10 +12,11 @@ version are parsed back out of each filename.
 
 Outputs:
   * stdlib_api_union.jsonl -- every qualname once, each record annotated with the set
-    of cells (os-family + python version) it appeared in.
+    of cells (os-family + python version) it appeared in, plus added_in/removed_in
+    derived from the OS-collapsed version presence.
   * a Markdown report to $GITHUB_STEP_SUMMARY (or --md-summary PATH): union size,
     per-cell counts, platform-exclusive API counts, a Windows-only sample, and the
-    added/removed deltas between the oldest and newest minor in the matrix.
+    per-adjacent-minor added/removed deltas (OS-collapsed) across the matrix.
 
 Stdlib only, no third-party deps. All file I/O is UTF-8.
     python merge_summary.py CELLS_DIR [-o stdlib_api_union.jsonl] [--md-summary PATH]
@@ -53,6 +54,21 @@ def version_key(version):
 
 def format_version(version_tuple):
     return ".".join(str(part) for part in version_tuple)
+
+def version_span(present_keys, matrix_keys):
+    """(added_in, removed_in) for one entity from its OS-collapsed version set.
+
+    added_in is floored at the matrix minimum: present at the floor means it was
+    added then or in some earlier, unobserved release, recorded as '<=X.Y'.
+    removed_in is precise -- the first matrix minor where it disappears."""
+    floor = matrix_keys[0]
+    added_in = "<=" + format_version(floor) if floor in present_keys else format_version(min(present_keys))
+    removed_in = None
+    for earlier, later in zip(matrix_keys, matrix_keys[1:]):
+        if earlier in present_keys and later not in present_keys:
+            removed_in = format_version(later)
+            break
+    return added_in, removed_in
 
 
 class Cell:
@@ -110,10 +126,12 @@ def aggregate(cells):
     for cell in sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99))):
         for qualname, record in cell.records.items():
             union_records[qualname] = record
+    matrix_keys = sorted({cell.version_key for cell in cells})
     for qualname in union:
         record = dict(union_records[qualname])
         record["cells"] = sorted(present_cells[qualname])
         record["n_cells"] = len(record["cells"])
+        record["added_in"], record["removed_in"] = version_span(present_version_keys[qualname], matrix_keys)
         union_records[qualname] = record
 
     return union, union_records, present_families, present_version_keys
@@ -145,15 +163,15 @@ def main():
         if len(families_present) == 1:
             exclusive.setdefault(next(iter(families_present)), []).append(qualname)
 
-    # Deltas between the oldest and newest minor actually present.
+    # Per-adjacent-minor deltas, OS-collapsed (present in a minor == present in any OS cell).
     version_keys = sorted({cell.version_key for cell in cells})
-    added, removed, oldest, newest = [], [], None, None
-    if len(version_keys) >= 2:
-        oldest, newest = version_keys[0], version_keys[-1]
-        added = [qualname for qualname in union if newest in present_version_keys[qualname] and oldest not in present_version_keys[qualname]]
-        removed = [qualname for qualname in union if oldest in present_version_keys[qualname] and newest not in present_version_keys[qualname]]
+    transitions = []
+    for earlier, later in zip(version_keys, version_keys[1:]):
+        added = [qualname for qualname in union if later in present_version_keys[qualname] and earlier not in present_version_keys[qualname]]
+        removed = [qualname for qualname in union if earlier in present_version_keys[qualname] and later not in present_version_keys[qualname]]
+        transitions.append((earlier, later, added, removed))
 
-    report(cells, union, union_records, exclusive, families, added, removed, oldest, newest, args)
+    report(cells, union, union_records, exclusive, families, transitions, version_keys, args)
 
 
 def _sample_table(lines, title, qualnames, union_records):
@@ -165,7 +183,7 @@ def _sample_table(lines, title, qualnames, union_records):
     lines.append("")
 
 
-def report(cells, union, union_records, exclusive, families, added, removed, oldest, newest, args):
+def report(cells, union, union_records, exclusive, families, transitions, version_keys, args):
     rows = sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99)))
 
     lines = ["# stdlib introspection — cross-platform union", ""]
@@ -194,17 +212,24 @@ def report(cells, union, union_records, exclusive, families, added, removed, old
         if windows_only:
             _sample_table(lines, "Windows-only sample", windows_only, union_records)
 
-        if oldest is not None:
-            oldest_label, newest_label = format_version(oldest), format_version(newest)
-            lines += [f"## Version deltas ({oldest_label} → {newest_label})", "",
-                      f"- **Added** — present on {newest_label}, absent on {oldest_label}: **{len(added)}**",
-                      f"- **Removed** — present on {oldest_label}, absent on {newest_label}: **{len(removed)}**", ""]
-            if added:
-                _sample_table(lines, f"Added since {oldest_label}", added, union_records)
-            if removed:
-                _sample_table(lines, f"Removed by {newest_label}", removed, union_records)
+        if transitions:
+            floor_label = format_version(version_keys[0])
+            lines += ["## Per-version deltas (OS-collapsed, adjacent minors)", "",
+                      f"An entity is present in a minor if it appears in **any** OS cell for it. "
+                      f"`added_in` for entities already present in {floor_label} is recorded as "
+                      f"`<={floor_label}` — the matrix floor bounds it.", "",
+                      "| transition | added | removed |", "| --- | ---: | ---: |"]
+            for earlier, later, added, removed in transitions:
+                lines.append(f"| {format_version(earlier)} → {format_version(later)} | {len(added)} | {len(removed)} |")
+            lines.append("")
+            for earlier, later, added, removed in transitions:
+                label = f"{format_version(earlier)} → {format_version(later)}"
+                if added:
+                    _sample_table(lines, f"Added in {label}", added, union_records)
+                if removed:
+                    _sample_table(lines, f"Removed in {label}", removed, union_records)
         else:
-            lines += ["## Version deltas", "",
+            lines += ["## Per-version deltas", "",
                       "_Need at least two Python minors in the matrix to compute deltas._", ""]
 
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
@@ -219,9 +244,8 @@ def report(cells, union, union_records, exclusive, families, added, removed, old
         print(f"  {cell.cell_id:18s} {len(cell.records):6d} entities{extra}")
     for family in families:
         print(f"  {family}-exclusive APIs : {len(exclusive.get(family, []))}")
-    if oldest is not None:
-        print(f"  added {len(added)} / removed {len(removed)}  "
-              f"({format_version(oldest)} -> {format_version(newest)})")
+    for earlier, later, added, removed in transitions:
+        print(f"  {format_version(earlier)} -> {format_version(later)}: +{len(added)} / -{len(removed)}")
     print(f"wrote {len(union)} records -> {args.output}")
     print("=" * 58)
 
