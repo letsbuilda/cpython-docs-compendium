@@ -226,9 +226,10 @@ def main():
             failed.append(f"{name} (walk: {e!r})")
 
     recs = sorted(RECORDS.values(), key=lambda r: r["qualname"])
-    # UTF-8 explicitly: the default encoding is cp1252 on Windows runners, which
-    # blows up on non-ASCII docstrings. Pin it so every cell behaves identically.
-    with open(args.output, "w", encoding="utf-8") as f:
+    # UTF-8 + LF explicitly: the default encoding is cp1252 on Windows runners (which
+    # blows up on non-ASCII docstrings) and text mode there translates \n -> \r\n. Pin
+    # both so every cell emits byte-identical output.
+    with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         for r in recs:
             f.write(json.dumps(r) + "\n")
 
@@ -311,7 +312,8 @@ def _markdown_summary(s, out, path):
 
     # Append, not write: $GITHUB_STEP_SUMMARY is an append target by design, and the
     # file is fresh per step so a local --md-summary run sees a clean file too.
-    with open(path, "a", encoding="utf-8") as f:
+    # newline="\n" keeps the summary byte-identical even on the Windows runner.
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(L) + "\n")
 
 if __name__ == "__main__":

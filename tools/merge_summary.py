@@ -127,7 +127,8 @@ def main():
     union, union_rec, present_fam, present_vk = aggregate(cells)
 
     # Always write the union file (even empty) so the upload step has an artifact.
-    with open(args.output, "w", encoding="utf-8") as f:
+    # newline="\n" so the artifact is byte-identical regardless of which runner ran us.
+    with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         for qn in union:
             f.write(json.dumps(union_rec[qn]) + "\n")
 
@@ -203,7 +204,7 @@ def report(cells, union, union_rec, exclusive, families, added, removed, oldest,
 
     md_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if md_path:
-        with open(md_path, "a", encoding="utf-8") as f:
+        with open(md_path, "a", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(L) + "\n")
 
     # Concise text mirror for the CI log / local use.
