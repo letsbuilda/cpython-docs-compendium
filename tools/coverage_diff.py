@@ -47,7 +47,6 @@ MODULE_ALIASES = {
 
 CELL_VERSION = re.compile(r"-py([0-9][^-]*)$")
 TOP_MODULES = 15
-MAX_SAMPLE_ROWS = 25
 
 
 def version_key(version):
@@ -233,15 +232,6 @@ def main():
            args.output, backlog_path, args)
 
 
-def _sample_table(lines, title, header, names):
-    lines += [f"### {title}", "", f"| {header} |", "| --- |"]
-    for name in sorted(names)[:MAX_SAMPLE_ROWS]:
-        lines.append(f"| `{name}` |")
-    if len(names) > MAX_SAMPLE_ROWS:
-        lines.append(f"| … (+{len(names) - MAX_SAMPLE_ROWS} more) |")
-    lines.append("")
-
-
 def report(versions, results, target, backlog_rows, docs_only, output_path, backlog_path, args):
     data_entries = sum(1 for row in backlog_rows if row["is_data"])
     lines = ["# stdlib documentation coverage", ""]
@@ -287,7 +277,6 @@ def report(versions, results, target, backlog_rows, docs_only, output_path, back
                               "docs still list, or names this run failed to enumerate "
                               "(normalization QA signal).")
             lines += [f"## Docs-only — {target} ({len(docs_only)})", "", docs_only_note, ""]
-            _sample_table(lines, "Sample", "name", docs_only)
 
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if markdown_path:
