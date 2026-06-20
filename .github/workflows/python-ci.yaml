@@ -42,7 +42,7 @@ jobs:
         run: uv run ruff check --output-format=github .
 
       - name: Run mypy
-        run: uv run mypy --strict src/ packages/ tests/
+        run: uv run mypy --strict tools/ noxfile.py
 
       - name: Run ty
         run: uv run ty check --output-format=github .

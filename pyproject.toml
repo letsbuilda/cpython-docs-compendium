@@ -5,6 +5,9 @@ authors = [
     { name = "Bradley Reynolds", email = "bradley.reynolds@tailstory.dev" },
 ]
 requires-python = ">=3.14"
+dependencies = [
+    "sphobjinv>=2.4",
+]
 
 [dependency-groups]
 dev = [
@@ -30,6 +33,28 @@ cache-dir = ".cache/ruff"
 select = [
     "ALL",
 ]
+ignore = [
+    "COM812",  # conflicts with the formatter
+    "ISC001",  # conflicts with the formatter
+    # No `from __future__ import annotations`, so annotation imports are evaluated at
+    # runtime and cannot move into a TYPE_CHECKING block.
+    "TC001",
+    "TC002",
+    "TC003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/*.py" = [
+    "T201",     # CLI tools: the printed report is the deliverable
+    "FBT",      # internal recursion helpers; keyword-only bools add churn, not safety
+    "PLR0913",  # record/report builders take one parameter per output column by design
+]
+# stdlib_introspect runs across the whole introspect matrix (older interpreters
+# included), so it keeps back-compatible idioms: TypeAlias over the newer `type`
+# statement (UP040). It also imports arbitrary modules, where a broad except is
+# intentional (BLE001).
+"tools/stdlib_introspect.py" = ["BLE001", "UP040"]
+"tools/coverage_diff.py" = ["S310"]  # fetches a fixed https://docs.python.org inventory URL
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -38,8 +63,11 @@ convention = "numpy"
 pretty = true
 num_workers = 4
 native_parser = true # required by num_workers
-plugins = ["pydantic.mypy"]
 cache_dir = ".cache/mypy"
+
+[[tool.mypy.overrides]]
+module = ["sphobjinv.*"]
+ignore_missing_imports = true  # sphobjinv ships no py.typed marker
 
 # Still need to tell Mypy to ignore these
 [tool.ty.rules]

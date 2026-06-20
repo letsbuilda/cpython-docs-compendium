@@ -22,23 +22,29 @@ Stdlib only, no third-party deps. All file I/O is UTF-8.
     python merge_summary.py CELLS_DIR [-o stdlib_api_union.jsonl] [--md-summary PATH]
 """
 
-from __future__ import annotations
-
 import argparse
-import glob
 import json
 import os
 import re
 import sys
 from collections import defaultdict
+from itertools import pairwise
+from pathlib import Path
+from typing import Any
+
+type Record = dict[str, Any]
+type VersionKey = tuple[int, ...]
+type Transition = tuple[VersionKey, VersionKey, list[str], list[str]]
 
 # Filenames look like stdlib_api_ubuntu-latest_py3.14.jsonl. The os has no "_py" and
 # the version no underscore, so a non-greedy split on the single "_py" is unambiguous.
 CELL_PATTERN = re.compile(r"^stdlib_api_(?P<os>.+?)_py(?P<ver>[^_]+)\.jsonl$")
 FAMILY_ORDER = {"linux": 0, "macos": 1, "windows": 2}
+UNRANKED_FAMILY = 99
 
 
-def os_family(label):
+def os_family(label: str) -> str:
+    """Collapse a runner label (``ubuntu-latest``) to an OS family (``linux``)."""
     lowered = label.lower()
     if lowered.startswith(("ubuntu", "linux")):
         return "linux"
@@ -49,17 +55,18 @@ def os_family(label):
     return lowered
 
 
-def version_key(version):
+def version_key(version: str) -> VersionKey:
     """'3.14' -> (3, 14); tolerant of '3.15.0a1' and junk."""
     numbers = re.findall(r"\d+", version)
     return tuple(int(number) for number in numbers[:2]) if numbers else (0,)
 
 
-def format_version(version_tuple):
+def format_version(version_tuple: VersionKey) -> str:
+    """Render a version key back as a dotted ``X.Y`` string."""
     return ".".join(str(part) for part in version_tuple)
 
 
-def version_span(present_keys, matrix_keys):
+def version_span(present_keys: set[VersionKey], matrix_keys: list[VersionKey]) -> tuple[str, str | None]:
     """(added_in, removed_in) for one entity from its OS-collapsed version set.
 
     added_in is floored at the matrix minimum: present at the floor means it was
@@ -69,7 +76,7 @@ def version_span(present_keys, matrix_keys):
     floor = matrix_keys[0]
     added_in = "<=" + format_version(floor) if floor in present_keys else format_version(min(present_keys))
     removed_in = None
-    for earlier, later in zip(matrix_keys, matrix_keys[1:]):
+    for earlier, later in pairwise(matrix_keys):
         if earlier in present_keys and later not in present_keys:
             removed_in = format_version(later)
             break
@@ -77,33 +84,37 @@ def version_span(present_keys, matrix_keys):
 
 
 class Cell:
-    def __init__(self, path, os_label, version):
+    """One matrix cell's records, tagged with its OS family and Python version."""
+
+    def __init__(self, path: Path, os_label: str, version: str) -> None:
         self.path = path
         self.os_label = os_label
         self.family = os_family(os_label)
         self.version = version
         self.version_key = version_key(version)
         self.cell_id = f"{self.family}-py{version}"
-        self.records = {}  # qualname -> record (last wins within a cell)
+        self.records: dict[str, Record] = {}  # qualname -> record (last wins within a cell)
         self.malformed = 0
 
-    def load(self):
-        with open(self.path, encoding="utf-8") as source_file:
+    def load(self) -> None:
+        """Parse the cell's JSONL file, tolerating malformed lines from a crashed cell."""
+        with self.path.open(encoding="utf-8") as source_file:
             for line in source_file:
-                line = line.strip()
-                if not line:
+                stripped = line.strip()
+                if not stripped:
                     continue
                 try:
-                    record = json.loads(line)
+                    record = json.loads(stripped)
                     self.records[record["qualname"]] = record
                 except json.JSONDecodeError, KeyError, TypeError:
                     self.malformed += 1  # tolerate a half-written dump from a crashed cell
 
 
-def discover(cells_dir):
+def discover(cells_dir: str) -> list[Cell]:
+    """Load every recognized ``stdlib_api_<os>_py<ver>.jsonl`` cell under ``cells_dir``."""
     cells = []
-    for path in sorted(glob.glob(os.path.join(cells_dir, "stdlib_api_*_py*.jsonl"))):
-        match = CELL_PATTERN.match(os.path.basename(path))
+    for path in sorted(Path(cells_dir).glob("stdlib_api_*_py*.jsonl")):
+        match = CELL_PATTERN.match(path.name)
         if not match:
             print(f"  ! unrecognized file name, skipping: {path}", file=sys.stderr)
             continue
@@ -113,10 +124,13 @@ def discover(cells_dir):
     return cells
 
 
-def aggregate(cells):
-    present_cells = defaultdict(set)  # qualname -> {cell_id}
-    present_families = defaultdict(set)  # qualname -> {family}
-    present_version_keys = defaultdict(set)  # qualname -> {version_key}
+def aggregate(
+    cells: list[Cell],
+) -> tuple[list[str], dict[str, Record], dict[str, set[str]], dict[str, set[VersionKey]]]:
+    """Union the cells' records and annotate each with its cell/version presence."""
+    present_cells: defaultdict[str, set[str]] = defaultdict(set)  # qualname -> {cell_id}
+    present_families: defaultdict[str, set[str]] = defaultdict(set)  # qualname -> {family}
+    present_version_keys: defaultdict[str, set[VersionKey]] = defaultdict(set)  # qualname -> {version_key}
     for cell in cells:
         for qualname in cell.records:
             present_cells[qualname].add(cell.cell_id)
@@ -127,10 +141,11 @@ def aggregate(cells):
 
     # Walk cells oldest -> newest and let the newer cell overwrite, so the union's base
     # record carries the newest minor's signature/docstring.
-    union_records = {}
-    for cell in sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99))):
-        for qualname, record in cell.records.items():
-            union_records[qualname] = record
+    union_records: dict[str, Record] = {
+        qualname: record
+        for cell in sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, UNRANKED_FAMILY)))
+        for qualname, record in cell.records.items()
+    }
     matrix_keys = sorted({cell.version_key for cell in cells})
     for qualname in union:
         record = dict(union_records[qualname])
@@ -142,12 +157,15 @@ def aggregate(cells):
     return union, union_records, present_families, present_version_keys
 
 
-def main():
+def main() -> None:
+    """Parse arguments, build the union, write it out, and report."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("cells_dir", help="directory of stdlib_api_<os>_py<ver>.jsonl files")
     parser.add_argument("-o", "--output", default="stdlib_api_union.jsonl")
     parser.add_argument(
-        "--md-summary", metavar="PATH", help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)",
+        "--md-summary",
+        metavar="PATH",
+        help="write the Markdown report here (defaults to $GITHUB_STEP_SUMMARY)",
     )
     args = parser.parse_args()
 
@@ -156,12 +174,12 @@ def main():
 
     # Always write the union file (even empty) so the upload step has an artifact;
     # newline="\n" so the artifact is byte-identical regardless of which runner ran us.
-    with open(args.output, "w", encoding="utf-8", newline="\n") as out_file:
+    with Path(args.output).open("w", encoding="utf-8", newline="\n") as out_file:
         out_file.writelines(json.dumps(union_records[qualname]) + "\n" for qualname in union)
 
     # Platform-exclusive: present on exactly one OS family across the matrix.
-    families = sorted({cell.family for cell in cells}, key=lambda family: FAMILY_ORDER.get(family, 99))
-    exclusive = {family: [] for family in families}
+    families = sorted({cell.family for cell in cells}, key=lambda family: FAMILY_ORDER.get(family, UNRANKED_FAMILY))
+    exclusive: dict[str, list[str]] = {family: [] for family in families}
     for qualname in union:
         families_present = present_families[qualname]
         if len(families_present) == 1:
@@ -169,8 +187,8 @@ def main():
 
     # Per-adjacent-minor deltas, OS-collapsed (present in a minor == present in any OS cell).
     version_keys = sorted({cell.version_key for cell in cells})
-    transitions = []
-    for earlier, later in zip(version_keys, version_keys[1:]):
+    transitions: list[Transition] = []
+    for earlier, later in pairwise(version_keys):
         added = [
             qualname
             for qualname in union
@@ -186,15 +204,25 @@ def main():
     report(cells, union, exclusive, families, transitions, version_keys, args)
 
 
-def report(cells, union, exclusive, families, transitions, version_keys, args):
-    rows = sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, 99)))
+def report(
+    cells: list[Cell],
+    union: list[str],
+    exclusive: dict[str, list[str]],
+    families: list[str],
+    transitions: list[Transition],
+    version_keys: list[VersionKey],
+    args: argparse.Namespace,
+) -> None:
+    """Render the union as a Markdown report and a console summary."""
+    rows = sorted(cells, key=lambda cell: (cell.version_key, FAMILY_ORDER.get(cell.family, UNRANKED_FAMILY)))
 
     lines = ["# stdlib introspection — cross-platform union", ""]
     if not cells:
-        lines += [
-            "> **No cell artifacts were found.** Every matrix cell failed to produce a dump, or the download step pulled nothing.",
-            "",
-        ]
+        no_cells = (
+            "> **No cell artifacts were found.** Every matrix cell failed to produce "
+            "a dump, or the download step pulled nothing."
+        )
+        lines += [no_cells, ""]
     else:
         versions = sorted({format_version(cell.version_key) for cell in cells}, key=version_key)
         lines += [
@@ -224,12 +252,15 @@ def report(cells, union, exclusive, families, transitions, version_keys, args):
 
         if transitions:
             floor_label = format_version(version_keys[0])
+            deltas_intro = (
+                f"An entity is present in a minor if it appears in **any** OS cell for it. "
+                f"`added_in` for entities already present in {floor_label} is recorded as "
+                f"`<={floor_label}` — the matrix floor bounds it."
+            )
             lines += [
                 "## Per-version deltas (OS-collapsed, adjacent minors)",
                 "",
-                f"An entity is present in a minor if it appears in **any** OS cell for it. "
-                f"`added_in` for entities already present in {floor_label} is recorded as "
-                f"`<={floor_label}` — the matrix floor bounds it.",
+                deltas_intro,
                 "",
                 "| transition | added | removed |",
                 "| --- | ---: | ---: |",
@@ -247,7 +278,7 @@ def report(cells, union, exclusive, families, transitions, version_keys, args):
 
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if markdown_path:
-        with open(markdown_path, "a", encoding="utf-8", newline="\n") as summary_file:
+        with Path(markdown_path).open("a", encoding="utf-8", newline="\n") as summary_file:
             summary_file.write("\n".join(lines) + "\n")
 
     print("\n=== union summary ========================================")
