@@ -27,7 +27,7 @@ jobs:
   introspect:
     name: introspect ${{ matrix.os }} / py${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +50,8 @@ jobs:
           INCLUDE_DUNDERS: ${{ github.event.inputs.include_dunders || 'false' }}
           INCLUDE_PRIVATE: ${{ github.event.inputs.include_private || 'false' }}
           OUT: stdlib_api_${{ matrix.os }}_py${{ matrix.python-version }}.jsonl
+          WATCHDOG_SECONDS: "120"
+          TRACE_IMPORTS: "1"
         run: |
           flags=()
           [ "$INCLUDE_DUNDERS" = "true" ] && flags+=(--include-dunders)
@@ -74,7 +76,7 @@ jobs:
     needs: [introspect]
     if: always()   # union whatever cells succeeded, even if some cells failed
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
