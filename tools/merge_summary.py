@@ -164,12 +164,10 @@ def report(cells, union, union_rec, exclusive, families, added, removed, oldest,
 
     L = ["# stdlib introspection — cross-platform union", ""]
     if not cells:
-        L += ["> **No cell artifacts were found.** Every matrix cell failed to produce "
-              "a dump, or the download step pulled nothing.", ""]
+        L += ["> **No cell artifacts were found.** Every matrix cell failed to produce a dump, or the download step pulled nothing.", ""]
     else:
         vers = sorted({fmt_ver(c.vk) for c in cells}, key=ver_key)
-        L += [f"Aggregated **{len(cells)}** cells — families: {', '.join(families)}; "
-              f"Python: {', '.join(vers)}.", "",
+        L += [f"Aggregated **{len(cells)}** cells — families: {', '.join(families)}; Python: {', '.join(vers)}.", "",
               f"**Union surface: {len(union)} unique qualnames.**", ""]
 
         L += ["## Per-cell entity counts", "",
