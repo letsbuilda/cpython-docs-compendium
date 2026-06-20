@@ -1,0 +1,100 @@
+name: stdlib-introspect
+
+on:
+  schedule:
+    # GitHub disables scheduled workflows after ~60 days of repo inactivity;
+    # re-enable from the Actions tab if the nightly stops firing.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      include_dunders:
+        description: "Include per-type dunder methods (__init__, ...)"
+        type: boolean
+        default: false
+      include_private:
+        description: "Include private, _-prefixed names"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stdlib-introspect
+  cancel-in-progress: false
+
+jobs:
+  introspect:
+    name: introspect ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Floor is 3.10 (sys.stdlib_module_names); 3.15 is the in-dev branch, which
+        # needs allow-prereleases below to resolve.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Run introspection
+        shell: bash   # Windows defaults to pwsh; the array flag-building below needs bash
+        env:
+          # Scheduled runs send no inputs, so default the toggles defensively.
+          INCLUDE_DUNDERS: ${{ github.event.inputs.include_dunders || 'false' }}
+          INCLUDE_PRIVATE: ${{ github.event.inputs.include_private || 'false' }}
+          OUT: stdlib_api_${{ matrix.os }}_py${{ matrix.python-version }}.jsonl
+        run: |
+          flags=()
+          [ "$INCLUDE_DUNDERS" = "true" ] && flags+=(--include-dunders)
+          [ "$INCLUDE_PRIVATE" = "true" ] && flags+=(--include-private)
+          echo "running: tools/stdlib_introspect.py -o $OUT ${flags[*]}"
+          # The script writes the $GITHUB_STEP_SUMMARY summary and fails on a tiny dump.
+          python tools/stdlib_introspect.py -o "$OUT" "${flags[@]}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()   # upload even a gate-failed cell's dump, for debugging
+        with:
+          # archive: false uploads the raw .jsonl with no zip wrapper; the artifact is
+          # then named after the file (the name input is ignored), and that filename
+          # already carries the matrix values, so it stays unique per cell.
+          path: stdlib_api_${{ matrix.os }}_py${{ matrix.python-version }}.jsonl
+          archive: false
+          retention-days: 14
+          if-no-files-found: warn
+
+  aggregate:
+    name: aggregate union
+    needs: [introspect]
+    if: always()   # union whatever cells succeeded, even if some cells failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.x"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: stdlib_api_*_py*
+          merge-multiple: true
+          path: cells
+
+      - name: Merge + summarize
+        run: python tools/merge_summary.py cells -o stdlib_api_union.jsonl
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          path: stdlib_api_union.jsonl
+          archive: false
+          retention-days: 30
+          if-no-files-found: warn
