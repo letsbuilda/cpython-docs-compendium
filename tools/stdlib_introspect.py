@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""stdlib_introspect.py -- Pass 1+2 of the CPython docs-completeness tool.
+
+Enumerates the standard library's public API surface by introspection and emits
+one JSON record per documentable entity (JSONL). This is the "what exists" view
+on THIS interpreter / build / platform only. The cross-platform + cross-version
+union, the typeshed merge, and the objects.inv coverage diff are later passes.
+
+Stdlib only, no third-party deps. Run:
+    python stdlib_introspect.py [-o out.jsonl] [--include-dunders] [--include-private]
+
+Dunder handling mirrors current docs behavior: per-type dunders are excluded by
+default (the docs cover them in the data model section). Use --include-dunders to
+keep them, flagged with is_dunder=True.
+"""
+from __future__ import annotations
+import sys, io, json, inspect, pkgutil, importlib, warnings, argparse, contextlib
+
+# --- config ----------------------------------------------------------------
+
+# Import-time side effects (browser/print) or things we never document.
+SKIP_MODULES = {
+    "antigravity",          # opens a web browser on import
+    "this",                 # prints the Zen of Python
+    "__hello__", "__phello__",   # print on import
+    "test",                 # CPython's own test suite
+    "idlelib",              # the IDLE GUI app
+    "turtledemo",           # demo scripts
+    "lib2to3",              # grammar/test heavy; removed in 3.13
+}
+TEST_PARTS = {"test", "tests"}
+
+def is_dunder(name):  return len(name) > 4 and name.startswith("__") and name.endswith("__")
+def is_private(name): return name.startswith("_") and not is_dunder(name)
+
+# --- safe import -----------------------------------------------------------
+
+@contextlib.contextmanager
+def _silenced():
+    """Swallow stdout/stderr/warnings during risky imports."""
+    sink = io.StringIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            yield
+
+def safe_import(name):
+    short = name.split(".")[-1]
+    if name in SKIP_MODULES or short in SKIP_MODULES:
+        return None
+    try:
+        with _silenced():
+            return importlib.import_module(name)
+    except KeyboardInterrupt:
+        raise
+    except BaseException:        # ImportError, platform gates, missing C libs, etc.
+        return None
+
+# --- module roster (Pass 1) ------------------------------------------------
+
+def roster(include_private):
+    names = getattr(sys, "stdlib_module_names", None)
+    if not names:
+        sys.exit("Requires Python 3.10+ (needs sys.stdlib_module_names).")
+    seen = set()
+    for top in sorted(n for n in names if include_private or not n.startswith("_")):
+        yield from _emit(top, include_private, seen)
+
+def _emit(name, include_private, seen):
+    if name in seen:
+        return
+    seen.add(name)
+    short = name.split(".")[-1]
+    if name in SKIP_MODULES or short in SKIP_MODULES or short in TEST_PARTS:
+        return
+    mod = safe_import(name)
+    yield name, mod
+    if mod is not None and hasattr(mod, "__path__"):
+        try:
+            with _silenced():
+                subs = [mi.name for mi in pkgutil.iter_modules(mod.__path__, name + ".")]
+        except Exception:
+            subs = []
+        for sub in sorted(subs):
+            ss = sub.split(".")[-1]
+            if (is_private(ss) and not include_private) or ss in TEST_PARTS:
+                continue
+            yield from _emit(sub, include_private, seen)
+
+# --- entity walk (Pass 2) --------------------------------------------------
+
+SEEN = {}       # id(obj) -> canonical qualname (first sighting)
+RECORDS = {}    # qualname -> record
+PENDING = {}    # id(obj) -> [alias qualnames seen before the canonical one]
+
+def kind_of(obj, in_class):
+    if inspect.ismodule(obj):       return "module"
+    if isinstance(obj, type):
+        return "exception" if issubclass(obj, BaseException) else "class"
+    if isinstance(obj, property):   return "property"
+    if inspect.isgetsetdescriptor(obj) or inspect.ismemberdescriptor(obj):
+        return "descriptor"
+    if inspect.isroutine(obj):      # function / builtin / method / method_descriptor
+        return "method" if in_class else "function"
+    return "data"
+
+def get_signature(obj):
+    try:
+        return str(inspect.signature(obj)), "inspect"
+    except (ValueError, TypeError):
+        ts = getattr(obj, "__text_signature__", None)
+        return (ts, "text_signature") if ts else (None, "none")
+
+def doc_info(obj):
+    own = bool(getattr(obj, "__doc__", None))
+    resolved = inspect.getdoc(obj)
+    first = ""
+    if resolved and resolved.strip():
+        first = resolved.strip().splitlines()[0][:100]
+    return own, bool(resolved), first
+
+def attach(canonical, alias):
+    rec = RECORDS.get(canonical)
+    if rec is not None and alias != canonical and alias not in rec["aliases"]:
+        rec["aliases"].append(alias)
+
+def note_alias(obj, qualname):
+    try:
+        oid = id(obj)
+    except Exception:
+        return
+    if oid in SEEN:
+        attach(SEEN[oid], qualname)
+    else:
+        PENDING.setdefault(oid, []).append(qualname)
+
+def record(qualname, kind, module, parent, obj, short):
+    sig, sig_src = get_signature(obj) if kind in {"function", "method", "class", "exception"} else (None, "n/a")
+    own, resolved, first = doc_info(obj)
+    RECORDS[qualname] = {
+        "qualname": qualname, "kind": kind, "module": module, "parent": parent,
+        "is_dunder": is_dunder(short),
+        "signature": sig, "sig_source": sig_src,
+        "doc_own": own, "doc_resolved": resolved, "doc_firstline": first,
+        "aliases": [],
+    }
+
+def process(obj, qualname, parent, modname, short, in_class, dnd, priv):
+    k = kind_of(obj, in_class)
+    if k == "data":
+        # Value-typed: identity is NOT meaningful (small ints / interned strings
+        # share id() across the whole stdlib), so no id-dedup and no recursion.
+        if qualname not in RECORDS:
+            record(qualname, k, modname, parent, obj, short)
+        return
+    oid = id(obj)
+    if oid in SEEN:
+        attach(SEEN[oid], qualname)        # re-export under another name
+        return
+    SEEN[oid] = qualname
+    k = kind_of(obj, in_class)
+    record(qualname, k, modname, parent, obj, short)
+    for a in PENDING.pop(oid, []):
+        attach(qualname, a)
+    # Recurse into a class's OWN members only (mirrors "document where defined").
+    if k in {"class", "exception"}:
+        for cname, cval in sorted(vars(obj).items()):
+            if (is_dunder(cname) and not dnd) or (is_private(cname) and not priv):
+                continue
+            process(cval, f"{qualname}.{cname}", qualname, modname, cname, True, dnd, priv)
+
+def walk_module(mod, dnd, priv):
+    modname = mod.__name__
+    # vars() (not dir()+getattr) so we don't trigger lazy __getattr__ / property side effects.
+    for name, val in sorted(vars(mod).items()):
+        if (is_dunder(name) and not dnd) or (is_private(name) and not priv):
+            continue
+        if inspect.ismodule(val):       # imported module ref (ast.sys, os.path); roster handles real modules
+            continue
+        owner = getattr(val, "__module__", None)
+        if owner is not None and owner != modname:
+            note_alias(val, f"{modname}.{name}")     # imported from elsewhere
+            continue
+        process(val, f"{modname}.{name}", modname, modname, name, False, dnd, priv)
+
+# --- driver ----------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-o", "--output", default="stdlib_api.jsonl")
+    ap.add_argument("--include-dunders", action="store_true")
+    ap.add_argument("--include-private", action="store_true")
+    args = ap.parse_args()
+
+    scanned, failed = 0, []
+    for name, mod in roster(args.include_private):
+        scanned += 1
+        if mod is None:
+            failed.append(name)
+            continue
+        # Explicit module record (a module is itself a documentable page).
+        own, resolved, first = doc_info(mod)
+        RECORDS[name] = {
+            "qualname": name, "kind": "module", "module": name,
+            "parent": name.rpartition(".")[0] or None, "is_dunder": False,
+            "signature": None, "sig_source": "n/a",
+            "doc_own": own, "doc_resolved": resolved, "doc_firstline": first,
+            "aliases": [],
+        }
+        try:
+            walk_module(mod, args.include_dunders, args.include_private)
+        except Exception as e:
+            failed.append(f"{name} (walk: {e!r})")
+
+    recs = sorted(RECORDS.values(), key=lambda r: r["qualname"])
+    with open(args.output, "w") as f:
+        for r in recs:
+            f.write(json.dumps(r) + "\n")
+
+    _summary(recs, scanned, failed, args.output)
+
+def _summary(recs, scanned, failed, out):
+    from collections import Counter
+    kinds = Counter(r["kind"] for r in recs)
+    callables = [r for r in recs if r["kind"] in {"function", "method"}]
+    with_sig = sum(1 for r in callables if r["signature"])
+    with_doc = sum(1 for r in recs if r["doc_resolved"])
+    by_mod = Counter(r["qualname"].split(".")[0] for r in recs)
+
+    print(f"\n=== stdlib introspection summary =========================")
+    print(f"Python {sys.version.split()[0]} on {sys.platform}")
+    print(f"modules scanned        : {scanned}  ({len(failed)} not introspectable here)")
+    print(f"total entities         : {len(recs)}")
+    print(f"  by kind              : " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
+    if callables:
+        print(f"callables w/ signature : {with_sig}/{len(callables)}  ({100*with_sig//len(callables)}%)")
+    print(f"entities w/ docstring  : {with_doc}/{len(recs)}  ({100*with_doc//len(recs)}%)")
+    print(f"\ntop 12 modules by entity count:")
+    for m, n in by_mod.most_common(12):
+        print(f"  {n:5d}  {m}")
+    if failed:
+        show = ", ".join(failed[:18])
+        more = f"  (+{len(failed)-18} more)" if len(failed) > 18 else ""
+        print(f"\nnot introspectable on this build ({len(failed)}): {show}{more}")
+    print(f"\nwrote {len(recs)} records -> {out}")
+    print("=" * 58)
+
+if __name__ == "__main__":
+    main()
