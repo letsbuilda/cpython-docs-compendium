@@ -16,33 +16,42 @@ something broke rather than a real result.
 Per-type dunders are excluded by default (the docs cover them in the data model
 section); --include-dunders keeps them, flagged with is_dunder=True.
 """
+
 from __future__ import annotations
-import sys
-import os
-import io
-import json
-import inspect
-import pkgutil
-import importlib
-import warnings
+
 import argparse
 import contextlib
+import importlib
+import inspect
+import io
+import json
+import os
+import pkgutil
 import platform
+import sys
+import warnings
 
 # Modules with import-time side effects (browser/print) or that we never document.
 SKIP_MODULES = {
-    "antigravity",          # opens a web browser on import
-    "this",                 # prints the Zen of Python
-    "__hello__", "__phello__",   # print on import
-    "test",                 # CPython's own test suite
-    "idlelib",              # the IDLE GUI app
-    "turtledemo",           # demo scripts
-    "lib2to3",              # grammar/test heavy; removed in 3.13
+    "antigravity",  # opens a web browser on import
+    "this",  # prints the Zen of Python
+    "__hello__",
+    "__phello__",  # print on import
+    "test",  # CPython's own test suite
+    "idlelib",  # the IDLE GUI app
+    "turtledemo",  # demo scripts
+    "lib2to3",  # grammar/test heavy; removed in 3.13
 }
 TEST_PARTS = {"test", "tests"}
 
-def is_dunder(name):  return len(name) > 4 and name.startswith("__") and name.endswith("__")
-def is_private(name): return name.startswith("_") and not is_dunder(name)
+
+def is_dunder(name):
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+def is_private(name):
+    return name.startswith("_") and not is_dunder(name)
+
 
 @contextlib.contextmanager
 def _silenced():
@@ -52,6 +61,7 @@ def _silenced():
         warnings.simplefilter("ignore")
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             yield
+
 
 def safe_import(name):
     short_name = name.split(".")[-1]
@@ -63,8 +73,9 @@ def safe_import(name):
             return importlib.import_module(name)
     except KeyboardInterrupt:
         raise
-    except BaseException:        # ImportError, platform gates, missing C libs, etc.
+    except BaseException:  # ImportError, platform gates, missing C libs, etc.
         return None
+
 
 def roster(include_private):
     names = getattr(sys, "stdlib_module_names", None)
@@ -73,6 +84,7 @@ def roster(include_private):
     seen = set()
     for top_level in sorted(name for name in names if include_private or not name.startswith("_")):
         yield from _emit(top_level, include_private, seen)
+
 
 def _emit(name, include_private, seen):
     if name in seen:
@@ -94,15 +106,19 @@ def _emit(name, include_private, seen):
             # __main__ submodules are `python -m pkg` entry points, not API surface, and
             # importing them RUNS code (tkinter opens a Tk mainloop, asyncio starts a stdin
             # REPL). Never import them -- nor any other dunder-named submodule.
-            if (is_dunder(submodule_short)
-                    or (is_private(submodule_short) and not include_private)
-                    or submodule_short in TEST_PARTS):
+            if (
+                is_dunder(submodule_short)
+                or (is_private(submodule_short) and not include_private)
+                or submodule_short in TEST_PARTS
+            ):
                 continue
             yield from _emit(submodule, include_private, seen)
 
-SEEN = {}       # id(obj) -> canonical qualname (first sighting)
+
+SEEN = {}  # id(obj) -> canonical qualname (first sighting)
 RECORDS = {}
-PENDING = {}    # id(obj) -> [alias qualnames seen before the canonical one]
+PENDING = {}  # id(obj) -> [alias qualnames seen before the canonical one]
+
 
 def kind_of(entity, in_class):
     if inspect.ismodule(entity):
@@ -113,16 +129,18 @@ def kind_of(entity, in_class):
         return "property"
     if inspect.isgetsetdescriptor(entity) or inspect.ismemberdescriptor(entity):
         return "descriptor"
-    if inspect.isroutine(entity):      # function / builtin / method / method_descriptor
+    if inspect.isroutine(entity):  # function / builtin / method / method_descriptor
         return "method" if in_class else "function"
     return "data"
+
 
 def get_signature(entity):
     try:
         return str(inspect.signature(entity)), "inspect"
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         text_signature = getattr(entity, "__text_signature__", None)
         return (text_signature, "text_signature") if text_signature else (None, "none")
+
 
 def doc_info(entity):
     has_own_doc = bool(getattr(entity, "__doc__", None))
@@ -132,10 +150,12 @@ def doc_info(entity):
         first_line = resolved_doc.strip().splitlines()[0][:100]
     return has_own_doc, bool(resolved_doc), first_line
 
+
 def attach(canonical, alias):
     existing = RECORDS.get(canonical)
     if existing is not None and alias != canonical and alias not in existing["aliases"]:
         existing["aliases"].append(alias)
+
 
 def note_alias(entity, qualname):
     try:
@@ -147,16 +167,26 @@ def note_alias(entity, qualname):
     else:
         PENDING.setdefault(object_id, []).append(qualname)
 
+
 def record(qualname, kind, module, parent, entity, short_name):
-    signature, signature_source = get_signature(entity) if kind in {"function", "method", "class", "exception"} else (None, "n/a")
+    signature, signature_source = (
+        get_signature(entity) if kind in {"function", "method", "class", "exception"} else (None, "n/a")
+    )
     has_own_doc, has_resolved_doc, first_line = doc_info(entity)
     RECORDS[qualname] = {
-        "qualname": qualname, "kind": kind, "module": module, "parent": parent,
+        "qualname": qualname,
+        "kind": kind,
+        "module": module,
+        "parent": parent,
         "is_dunder": is_dunder(short_name),
-        "signature": signature, "sig_source": signature_source,
-        "doc_own": has_own_doc, "doc_resolved": has_resolved_doc, "doc_firstline": first_line,
+        "signature": signature,
+        "sig_source": signature_source,
+        "doc_own": has_own_doc,
+        "doc_resolved": has_resolved_doc,
+        "doc_firstline": first_line,
         "aliases": [],
     }
+
 
 def process(entity, qualname, parent, module_name, short_name, in_class, include_dunders, include_private):
     kind = kind_of(entity, in_class)
@@ -168,7 +198,7 @@ def process(entity, qualname, parent, module_name, short_name, in_class, include
         return
     object_id = id(entity)
     if object_id in SEEN:
-        attach(SEEN[object_id], qualname)        # re-export under another name
+        attach(SEEN[object_id], qualname)  # re-export under another name
         return
     SEEN[object_id] = qualname
     kind = kind_of(entity, in_class)
@@ -180,7 +210,17 @@ def process(entity, qualname, parent, module_name, short_name, in_class, include
         for child_name, child_value in sorted(vars(entity).items()):
             if (is_dunder(child_name) and not include_dunders) or (is_private(child_name) and not include_private):
                 continue
-            process(child_value, f"{qualname}.{child_name}", qualname, module_name, child_name, True, include_dunders, include_private)
+            process(
+                child_value,
+                f"{qualname}.{child_name}",
+                qualname,
+                module_name,
+                child_name,
+                True,
+                include_dunders,
+                include_private,
+            )
+
 
 def walk_module(module, include_dunders, include_private):
     module_name = module.__name__
@@ -188,25 +228,32 @@ def walk_module(module, include_dunders, include_private):
     for name, value in sorted(vars(module).items()):
         if (is_dunder(name) and not include_dunders) or (is_private(name) and not include_private):
             continue
-        if inspect.ismodule(value):       # imported module ref (ast.sys, os.path); roster handles real modules
+        if inspect.ismodule(value):  # imported module ref (ast.sys, os.path); roster handles real modules
             continue
         owner = getattr(value, "__module__", None)
         if owner is not None and owner != module_name:
-            note_alias(value, f"{module_name}.{name}")     # imported from elsewhere
+            note_alias(value, f"{module_name}.{name}")  # imported from elsewhere
             continue
         process(value, f"{module_name}.{name}", module_name, module_name, name, False, include_dunders, include_private)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-o", "--output", default="stdlib_api.jsonl")
     parser.add_argument("--include-dunders", action="store_true")
     parser.add_argument("--include-private", action="store_true")
-    parser.add_argument("--md-summary", metavar="PATH",
-                        help="also write the summary as Markdown here "
-                             "(defaults to $GITHUB_STEP_SUMMARY when that is set)")
-    parser.add_argument("--min-entities", type=int, default=5000,
-                        help="sanity gate: exit non-zero if fewer than N records were "
-                             "produced (a near-empty dump means the build is broken)")
+    parser.add_argument(
+        "--md-summary",
+        metavar="PATH",
+        help="also write the summary as Markdown here (defaults to $GITHUB_STEP_SUMMARY when that is set)",
+    )
+    parser.add_argument(
+        "--min-entities",
+        type=int,
+        default=5000,
+        help="sanity gate: exit non-zero if fewer than N records were "
+        "produced (a near-empty dump means the build is broken)",
+    )
     args = parser.parse_args()
 
     scanned, failed = 0, []
@@ -217,10 +264,16 @@ def main():
             continue
         has_own_doc, has_resolved_doc, first_line = doc_info(module)
         RECORDS[name] = {
-            "qualname": name, "kind": "module", "module": name,
-            "parent": name.rpartition(".")[0] or None, "is_dunder": False,
-            "signature": None, "sig_source": "n/a",
-            "doc_own": has_own_doc, "doc_resolved": has_resolved_doc, "doc_firstline": first_line,
+            "qualname": name,
+            "kind": "module",
+            "module": name,
+            "parent": name.rpartition(".")[0] or None,
+            "is_dunder": False,
+            "signature": None,
+            "sig_source": "n/a",
+            "doc_own": has_own_doc,
+            "doc_resolved": has_resolved_doc,
+            "doc_firstline": first_line,
             "aliases": [],
         }
         try:
@@ -232,8 +285,7 @@ def main():
     # Default encoding is cp1252 on Windows (crashes on non-ASCII docstrings) and text
     # mode there translates \n -> \r\n; pin UTF-8 + LF so every cell emits identical bytes.
     with open(args.output, "w", encoding="utf-8", newline="\n") as out_file:
-        for entry in records:
-            out_file.write(json.dumps(entry) + "\n")
+        out_file.writelines(json.dumps(entry) + "\n" for entry in records)
 
     stats = _stats(records, scanned, failed)
     _text_summary(stats, args.output)
@@ -244,11 +296,15 @@ def main():
     # Gate last, after the output and summaries are written, so a broken cell still
     # uploads its dump and renders a summary before the non-zero exit fails the job.
     if len(records) < args.min_entities:
-        sys.exit(f"\nSANITY GATE: only {len(records)} records (< --min-entities "
-                 f"{args.min_entities}); this build looks broken.")
+        sys.exit(
+            f"\nSANITY GATE: only {len(records)} records (< --min-entities "
+            f"{args.min_entities}); this build looks broken.",
+        )
+
 
 def _stats(records, scanned, failed):
     from collections import Counter
+
     callables = [entry for entry in records if entry["kind"] in {"function", "method"}]
     return {
         "total_records": len(records),
@@ -261,28 +317,35 @@ def _stats(records, scanned, failed):
         "by_module": Counter(entry["qualname"].split(".")[0] for entry in records),
     }
 
+
 def _percent(part, whole):
-    return f"{100*part//whole}%" if whole else "n/a"
+    return f"{100 * part // whole}%" if whole else "n/a"
+
 
 def _text_summary(stats, output_path):
     print("\n=== stdlib introspection summary =========================")
     print(f"Python {sys.version.split()[0]} on {sys.platform}")
     print(f"modules scanned        : {stats['scanned']}  ({len(stats['failed'])} not introspectable here)")
     print(f"total entities         : {stats['total_records']}")
-    print("  by kind              : " + ", ".join(f"{kind}={count}" for kind, count in stats['kinds'].most_common()))
-    if stats['total_callables']:
-        print(f"callables w/ signature : {stats['with_signature']}/{stats['total_callables']}  ({_percent(stats['with_signature'], stats['total_callables'])})")
-    if stats['total_records']:
-        print(f"entities w/ docstring  : {stats['with_docstring']}/{stats['total_records']}  ({_percent(stats['with_docstring'], stats['total_records'])})")
+    print("  by kind              : " + ", ".join(f"{kind}={count}" for kind, count in stats["kinds"].most_common()))
+    if stats["total_callables"]:
+        print(
+            f"callables w/ signature : {stats['with_signature']}/{stats['total_callables']}  ({_percent(stats['with_signature'], stats['total_callables'])})",
+        )
+    if stats["total_records"]:
+        print(
+            f"entities w/ docstring  : {stats['with_docstring']}/{stats['total_records']}  ({_percent(stats['with_docstring'], stats['total_records'])})",
+        )
     print("\ntop 12 modules by entity count:")
-    for module_name, count in stats['by_module'].most_common(12):
+    for module_name, count in stats["by_module"].most_common(12):
         print(f"  {count:5d}  {module_name}")
-    if stats['failed']:
-        shown = ", ".join(stats['failed'][:18])
-        more = f"  (+{len(stats['failed'])-18} more)" if len(stats['failed']) > 18 else ""
+    if stats["failed"]:
+        shown = ", ".join(stats["failed"][:18])
+        more = f"  (+{len(stats['failed']) - 18} more)" if len(stats["failed"]) > 18 else ""
         print(f"\nnot introspectable on this build ({len(stats['failed'])}): {shown}{more}")
     print(f"\nwrote {stats['total_records']} records -> {output_path}")
     print("=" * 58)
+
 
 def _markdown_summary(stats, output_path, summary_path):
     python_version = sys.version.split()[0]
@@ -296,17 +359,21 @@ def _markdown_summary(stats, output_path, summary_path):
         f"| modules not introspectable | {len(stats['failed'])} |",
         f"| total entities | {stats['total_records']} |",
     ]
-    if stats['total_callables']:
-        lines.append(f"| callables w/ signature | {stats['with_signature']}/{stats['total_callables']} ({_percent(stats['with_signature'], stats['total_callables'])}) |")
-    lines.append(f"| entities w/ docstring | {stats['with_docstring']}/{stats['total_records']} ({_percent(stats['with_docstring'], stats['total_records'])}) |")
+    if stats["total_callables"]:
+        lines.append(
+            f"| callables w/ signature | {stats['with_signature']}/{stats['total_callables']} ({_percent(stats['with_signature'], stats['total_callables'])}) |",
+        )
+    lines.append(
+        f"| entities w/ docstring | {stats['with_docstring']}/{stats['total_records']} ({_percent(stats['with_docstring'], stats['total_records'])}) |",
+    )
 
     lines += ["", "### Entities by kind", "", "| kind | count |", "| --- | --- |"]
-    lines += [f"| {kind} | {count} |" for kind, count in stats['kinds'].most_common()]
+    lines += [f"| {kind} | {count} |" for kind, count in stats["kinds"].most_common()]
 
     lines += ["", "### Top modules by entity count", "", "| module | entities |", "| --- | --- |"]
-    lines += [f"| `{module_name}` | {count} |" for module_name, count in stats['by_module'].most_common(12)]
+    lines += [f"| `{module_name}` | {count} |" for module_name, count in stats["by_module"].most_common(12)]
 
-    failed = stats['failed']
+    failed = stats["failed"]
     lines += ["", f"### Not introspectable on this build ({len(failed)})", ""]
     lines.append(", ".join(f"`{module_name}`" for module_name in sorted(failed)) if failed else "_none_")
     lines.append("")
@@ -315,6 +382,7 @@ def _markdown_summary(stats, output_path, summary_path):
     # newline="\n" keeps the summary byte-identical on the Windows runner.
     with open(summary_path, "a", encoding="utf-8", newline="\n") as summary_file:
         summary_file.write("\n".join(lines) + "\n")
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,26 @@
+repos:
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply
+      - id: check-useless-excludes
+
+  - repo: builtin
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: trailing-whitespace
+        args: [ --markdown-linebreak-ext=md ]
+      - id: mixed-line-ending
+        args: [ --fix=lf ]
+      - id: end-of-file-fixer
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: b17b79c1cab56c3d1025ad36cb117fe602e570fd  # frozen: 0.11.23
+    hooks:
+      - id: uv-lock
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: 9257c6050c0261b8c57e712f632dc4a8010109a9  # frozen: v1.25.2
+    hooks:
+      - id: zizmor
