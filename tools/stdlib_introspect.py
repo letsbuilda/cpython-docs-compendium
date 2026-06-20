@@ -32,9 +32,9 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, TypeAlias
 
-type Record = dict[str, Any]
+Record: TypeAlias = dict[str, Any]
 
 # Modules with import-time side effects (browser/print) or that we never document.
 SKIP_MODULES = {
@@ -150,7 +150,7 @@ def get_signature(entity: object) -> tuple[str | None, str]:
     if callable(entity):
         try:
             return str(inspect.signature(entity)), "inspect"
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             pass
     text_signature = getattr(entity, "__text_signature__", None)
     return (text_signature, "text_signature") if text_signature else (None, "none")

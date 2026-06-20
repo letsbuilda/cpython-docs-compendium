@@ -30,11 +30,11 @@ import sys
 from collections import defaultdict
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
-type Record = dict[str, Any]
-type VersionKey = tuple[int, ...]
-type Transition = tuple[VersionKey, VersionKey, list[str], list[str]]
+Record: TypeAlias = dict[str, Any]
+VersionKey: TypeAlias = tuple[int, ...]
+Transition: TypeAlias = tuple[VersionKey, VersionKey, list[str], list[str]]
 
 # Filenames look like stdlib_api_ubuntu-latest_py3.14.jsonl. The os has no "_py" and
 # the version no underscore, so a non-greedy split on the single "_py" is unambiguous.
@@ -106,7 +106,7 @@ class Cell:
                 try:
                     record = json.loads(stripped)
                     self.records[record["qualname"]] = record
-                except json.JSONDecodeError, KeyError, TypeError:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     self.malformed += 1  # tolerate a half-written dump from a crashed cell
 
 
