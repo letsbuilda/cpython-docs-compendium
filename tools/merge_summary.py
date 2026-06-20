@@ -21,7 +21,12 @@ Stdlib only, no third-party deps. All file I/O is UTF-8.
     python merge_summary.py CELLS_DIR [-o stdlib_api_union.jsonl] [--md-summary PATH]
 """
 from __future__ import annotations
-import sys, os, re, json, glob, argparse
+import sys
+import os
+import re
+import json
+import glob
+import argparse
 from collections import defaultdict
 
 # Filenames look like stdlib_api_ubuntu-latest_py3.14.jsonl. The os has no "_py" and
@@ -33,9 +38,12 @@ MAX_SAMPLE_ROWS = 25
 
 def os_family(label):
     lowered = label.lower()
-    if lowered.startswith(("ubuntu", "linux")):        return "linux"
-    if lowered.startswith(("macos", "mac", "darwin")): return "macos"
-    if lowered.startswith(("windows", "win")):         return "windows"
+    if lowered.startswith(("ubuntu", "linux")):
+        return "linux"
+    if lowered.startswith(("macos", "mac", "darwin")):
+        return "macos"
+    if lowered.startswith(("windows", "win")):
+        return "windows"
     return lowered
 
 def version_key(version):
@@ -204,7 +212,7 @@ def report(cells, union, union_records, exclusive, families, added, removed, old
         with open(markdown_path, "a", encoding="utf-8", newline="\n") as summary_file:
             summary_file.write("\n".join(lines) + "\n")
 
-    print(f"\n=== union summary ========================================")
+    print("\n=== union summary ========================================")
     print(f"aggregated {len(cells)} cells -> {len(union)} unique qualnames")
     for cell in rows:
         extra = f"  ({cell.malformed} malformed lines)" if cell.malformed else ""

@@ -17,7 +17,17 @@ Per-type dunders are excluded by default (the docs cover them in the data model
 section); --include-dunders keeps them, flagged with is_dunder=True.
 """
 from __future__ import annotations
-import sys, os, io, json, inspect, pkgutil, importlib, warnings, argparse, contextlib, platform
+import sys
+import os
+import io
+import json
+import inspect
+import pkgutil
+import importlib
+import warnings
+import argparse
+import contextlib
+import platform
 
 # Modules with import-time side effects (browser/print) or that we never document.
 SKIP_MODULES = {
@@ -89,10 +99,12 @@ RECORDS = {}
 PENDING = {}    # id(obj) -> [alias qualnames seen before the canonical one]
 
 def kind_of(entity, in_class):
-    if inspect.ismodule(entity):       return "module"
+    if inspect.ismodule(entity):
+        return "module"
     if isinstance(entity, type):
         return "exception" if issubclass(entity, BaseException) else "class"
-    if isinstance(entity, property):   return "property"
+    if isinstance(entity, property):
+        return "property"
     if inspect.isgetsetdescriptor(entity) or inspect.ismemberdescriptor(entity):
         return "descriptor"
     if inspect.isroutine(entity):      # function / builtin / method / method_descriptor
@@ -247,16 +259,16 @@ def _percent(part, whole):
     return f"{100*part//whole}%" if whole else "n/a"
 
 def _text_summary(stats, output_path):
-    print(f"\n=== stdlib introspection summary =========================")
+    print("\n=== stdlib introspection summary =========================")
     print(f"Python {sys.version.split()[0]} on {sys.platform}")
     print(f"modules scanned        : {stats['scanned']}  ({len(stats['failed'])} not introspectable here)")
     print(f"total entities         : {stats['total_records']}")
-    print(f"  by kind              : " + ", ".join(f"{kind}={count}" for kind, count in stats['kinds'].most_common()))
+    print("  by kind              : " + ", ".join(f"{kind}={count}" for kind, count in stats['kinds'].most_common()))
     if stats['total_callables']:
         print(f"callables w/ signature : {stats['with_signature']}/{stats['total_callables']}  ({_percent(stats['with_signature'], stats['total_callables'])})")
     if stats['total_records']:
         print(f"entities w/ docstring  : {stats['with_docstring']}/{stats['total_records']}  ({_percent(stats['with_docstring'], stats['total_records'])})")
-    print(f"\ntop 12 modules by entity count:")
+    print("\ntop 12 modules by entity count:")
     for module_name, count in stats['by_module'].most_common(12):
         print(f"  {count:5d}  {module_name}")
     if stats['failed']:
