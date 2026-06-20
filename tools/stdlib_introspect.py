@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
-"""stdlib_introspect.py -- Pass 1+2 of the CPython docs-completeness tool.
+"""Enumerate the standard library's public API surface by introspection.
 
-Enumerates the standard library's public API surface by introspection and emits
-one JSON record per documentable entity (JSONL). This is the "what exists" view
-on THIS interpreter / build / platform only. The cross-platform + cross-version
-union, the typeshed merge, and the objects.inv coverage diff are later passes.
+Emits one JSON record per documentable entity (JSONL) for THIS interpreter, build,
+and platform only -- what exists here, which differs across OS and Python version.
 
 Stdlib only, no third-party deps. Run:
     python stdlib_introspect.py [-o out.jsonl] [--include-dunders] [--include-private]
                                 [--md-summary PATH] [--min-entities N]
 
-All file I/O is UTF-8. When --md-summary PATH is given (or the env var
-GITHUB_STEP_SUMMARY is set), the same stats are also rendered as Markdown there, so
-the CI job summary is generated in Python and is byte-identical across runners.
---min-entities is a sanity gate: a build that produces fewer records than that exits
-non-zero (a near-empty dump means something broke, not a real result).
+When --md-summary PATH is given (or the env var GITHUB_STEP_SUMMARY is set), the
+stats are also rendered as Markdown there. --min-entities is a sanity gate: a build
+that produces fewer records than that exits non-zero, because a near-empty dump means
+something broke rather than a real result.
 
-Dunder handling mirrors current docs behavior: per-type dunders are excluded by
-default (the docs cover them in the data model section). Use --include-dunders to
-keep them, flagged with is_dunder=True.
+Per-type dunders are excluded by default (the docs cover them in the data model
+section); --include-dunders keeps them, flagged with is_dunder=True.
 """
 from __future__ import annotations
 import sys, os, io, json, inspect, pkgutil, importlib, warnings, argparse, contextlib, platform
 
-# --- config ----------------------------------------------------------------
-
-# Import-time side effects (browser/print) or things we never document.
+# Modules with import-time side effects (browser/print) or that we never document.
 SKIP_MODULES = {
     "antigravity",          # opens a web browser on import
     "this",                 # prints the Zen of Python
@@ -39,8 +33,6 @@ TEST_PARTS = {"test", "tests"}
 
 def is_dunder(name):  return len(name) > 4 and name.startswith("__") and name.endswith("__")
 def is_private(name): return name.startswith("_") and not is_dunder(name)
-
-# --- safe import -----------------------------------------------------------
 
 @contextlib.contextmanager
 def _silenced():
@@ -62,8 +54,6 @@ def safe_import(name):
         raise
     except BaseException:        # ImportError, platform gates, missing C libs, etc.
         return None
-
-# --- module roster (Pass 1) ------------------------------------------------
 
 def roster(include_private):
     names = getattr(sys, "stdlib_module_names", None)
@@ -94,10 +84,8 @@ def _emit(name, include_private, seen):
                 continue
             yield from _emit(sub, include_private, seen)
 
-# --- entity walk (Pass 2) --------------------------------------------------
-
 SEEN = {}       # id(obj) -> canonical qualname (first sighting)
-RECORDS = {}    # qualname -> record
+RECORDS = {}
 PENDING = {}    # id(obj) -> [alias qualnames seen before the canonical one]
 
 def kind_of(obj, in_class):
@@ -190,8 +178,6 @@ def walk_module(mod, dnd, priv):
             continue
         process(val, f"{modname}.{name}", modname, modname, name, False, dnd, priv)
 
-# --- driver ----------------------------------------------------------------
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--output", default="stdlib_api.jsonl")
@@ -211,7 +197,6 @@ def main():
         if mod is None:
             failed.append(name)
             continue
-        # Explicit module record (a module is itself a documentable page).
         own, resolved, first = doc_info(mod)
         RECORDS[name] = {
             "qualname": name, "kind": "module", "module": name,
@@ -226,22 +211,20 @@ def main():
             failed.append(f"{name} (walk: {e!r})")
 
     recs = sorted(RECORDS.values(), key=lambda r: r["qualname"])
-    # UTF-8 + LF explicitly: the default encoding is cp1252 on Windows runners (which
-    # blows up on non-ASCII docstrings) and text mode there translates \n -> \r\n. Pin
-    # both so every cell emits byte-identical output.
+    # Default encoding is cp1252 on Windows (crashes on non-ASCII docstrings) and text
+    # mode there translates \n -> \r\n; pin UTF-8 + LF so every cell emits identical bytes.
     with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         for r in recs:
             f.write(json.dumps(r) + "\n")
 
     stats = _stats(recs, scanned, failed)
-    _text_summary(stats, args.output)              # always, for local/CI logs
+    _text_summary(stats, args.output)
     md_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if md_path:
         _markdown_summary(stats, args.output, md_path)
 
-    # Sanity gate last: the output and both summaries are already written, so a
-    # broken cell still uploads its (small) dump and renders a summary for debugging
-    # before the non-zero exit fails the job.
+    # Gate last, after the output and summaries are written, so a broken cell still
+    # uploads its dump and renders a summary before the non-zero exit fails the job.
     if len(recs) < args.min_entities:
         sys.exit(f"\nSANITY GATE: only {len(recs)} records (< --min-entities "
                  f"{args.min_entities}); this build looks broken.")
@@ -310,9 +293,8 @@ def _markdown_summary(s, out, path):
     L.append(", ".join(f"`{m}`" for m in sorted(failed)) if failed else "_none_")
     L.append("")
 
-    # Append, not write: $GITHUB_STEP_SUMMARY is an append target by design, and the
-    # file is fresh per step so a local --md-summary run sees a clean file too.
-    # newline="\n" keeps the summary byte-identical even on the Windows runner.
+    # Append: $GITHUB_STEP_SUMMARY is an append target, and the file is fresh per step.
+    # newline="\n" keeps the summary byte-identical on the Windows runner.
     with open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(L) + "\n")
 

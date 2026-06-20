@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""merge_summary.py -- aggregate per-cell stdlib introspection dumps.
+"""Aggregate per-cell stdlib introspection dumps into a cross-platform union.
 
-Pass 1.5 of the docs-completeness tool. Takes a directory of per-cell JSONL files
-produced by stdlib_introspect.py across an OS x Python-version matrix and builds the
-cross-platform, cross-version *union* of the stdlib API surface -- the thing no single
-interpreter can see on its own (winreg only exists on Windows, freshly-added APIs only
-exist on the newest minor, modules dropped between releases only exist on the oldest).
+Takes a directory of per-cell JSONL files produced by stdlib_introspect.py across an
+OS x Python-version matrix and builds the *union* of the stdlib API surface -- the
+thing no single interpreter can see on its own (winreg only exists on Windows,
+freshly-added APIs only exist on the newest minor, modules dropped between releases
+only exist on the oldest).
 
 Inputs are named stdlib_api_<os>_py<ver>.jsonl by the workflow; the OS label and Python
 version are parsed back out of each filename.
 
 Outputs:
   * stdlib_api_union.jsonl -- every qualname once, each record annotated with the set
-    of cells (os-family + python version) it appeared in. The real deliverable for
-    downstream passes (typeshed merge, objects.inv coverage diff).
+    of cells (os-family + python version) it appeared in.
   * a Markdown report to $GITHUB_STEP_SUMMARY (or --md-summary PATH): union size,
     per-cell counts, platform-exclusive API counts, a Windows-only sample, and the
     added/removed deltas between the oldest and newest minor in the matrix.
@@ -25,9 +24,8 @@ from __future__ import annotations
 import sys, os, re, json, glob, argparse
 from collections import defaultdict
 
-# Filenames look like: stdlib_api_ubuntu-latest_py3.14.jsonl
-# os has no "_py" in it and the version has no underscore, so a non-greedy os split
-# on the single "_py" separator is unambiguous.
+# Filenames look like stdlib_api_ubuntu-latest_py3.14.jsonl. The os has no "_py" and
+# the version no underscore, so a non-greedy split on the single "_py" is unambiguous.
 CELL_RE = re.compile(r"^stdlib_api_(?P<os>.+?)_py(?P<ver>[^_]+)\.jsonl$")
 FAM_ORDER = {"linux": 0, "macos": 1, "windows": 2}
 SAMPLE = 25     # cap rows in the Markdown sample tables
@@ -87,7 +85,6 @@ def discover(cells_dir):
 
 
 def aggregate(cells):
-    """Return (union, union_rec, present_fam, present_vk)."""
     present_cells = defaultdict(set)    # qualname -> {cell_id}
     present_fam = defaultdict(set)      # qualname -> {family}
     present_vk = defaultdict(set)       # qualname -> {version_key}
@@ -99,8 +96,8 @@ def aggregate(cells):
 
     union = sorted(present_cells)
 
-    # Base record for each qualname: walk cells oldest -> newest and let the newer
-    # cell overwrite, so the union carries the newest minor's signature/docstring.
+    # Walk cells oldest -> newest and let the newer cell overwrite, so the union's base
+    # record carries the newest minor's signature/docstring.
     union_rec = {}
     for c in sorted(cells, key=lambda c: (c.vk, FAM_ORDER.get(c.family, 99))):
         for qn, rec in c.records.items():
@@ -126,13 +123,13 @@ def main():
     cells = discover(args.cells_dir)
     union, union_rec, present_fam, present_vk = aggregate(cells)
 
-    # Always write the union file (even empty) so the upload step has an artifact.
+    # Always write the union file (even empty) so the upload step has an artifact;
     # newline="\n" so the artifact is byte-identical regardless of which runner ran us.
     with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         for qn in union:
             f.write(json.dumps(union_rec[qn]) + "\n")
 
-    # Platform-exclusive: a qualname seen on exactly one OS family across the matrix.
+    # Platform-exclusive: present on exactly one OS family across the matrix.
     families = sorted({c.family for c in cells}, key=lambda fm: FAM_ORDER.get(fm, 99))
     exclusive = {fm: [] for fm in families}
     for qn in union:
@@ -140,7 +137,7 @@ def main():
         if len(fams) == 1:
             exclusive.setdefault(next(iter(fams)), []).append(qn)
 
-    # Version deltas between the oldest and newest minor actually present.
+    # Deltas between the oldest and newest minor actually present.
     vks = sorted({c.vk for c in cells})
     added, removed, oldest, newest = [], [], None, None
     if len(vks) >= 2:
@@ -207,7 +204,6 @@ def report(cells, union, union_rec, exclusive, families, added, removed, oldest,
         with open(md_path, "a", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(L) + "\n")
 
-    # Concise text mirror for the CI log / local use.
     print(f"\n=== union summary ========================================")
     print(f"aggregated {len(cells)} cells -> {len(union)} unique qualnames")
     for c in rows:

@@ -1,14 +1,9 @@
 name: stdlib-introspect
 
-# Introspect the CPython standard library across an OS x Python-version matrix so we
-# capture the *full* public API surface -- including Windows-only modules (winreg,
-# msvcrt, winsound) and version-gated APIs that a single Linux run can never see.
-# Each cell uploads a JSONL dump + a rich job summary; the aggregate job unions them.
-
 on:
   schedule:
-    # Nightly at 06:00 UTC. GitHub disables scheduled workflows after ~60 days of
-    # repo inactivity -- re-enable from the Actions tab if that happens.
+    # GitHub disables scheduled workflows after ~60 days of repo inactivity;
+    # re-enable from the Actions tab if the nightly stops firing.
     - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
@@ -25,8 +20,6 @@ permissions:
   contents: read
 
 concurrency:
-  # One nightly and an on-demand run are independent datasets -- never cancel a
-  # running job when another starts.
   group: stdlib-introspect
   cancel-in-progress: false
 
@@ -36,14 +29,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
-      # Required: one bad cell (e.g. a dev-build provisioning failure) must not
-      # cancel the rest -- partial results are the whole point.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # Single source of truth for the version sweep. Floor is 3.10
-        # (sys.stdlib_module_names). 3.15 is the in-dev branch, resolved via
-        # allow-prereleases below.
+        # Floor is 3.10 (sys.stdlib_module_names); 3.15 is the in-dev branch, which
+        # needs allow-prereleases below to resolve.
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
@@ -54,9 +44,9 @@ jobs:
           allow-prereleases: true
 
       - name: Run introspection
-        shell: bash   # consistent flag-building + redirection on the Windows runner too
+        shell: bash   # Windows defaults to pwsh; the array flag-building below needs bash
         env:
-          # Defensive defaults so scheduled runs (which send no inputs) still work.
+          # Scheduled runs send no inputs, so default the toggles defensively.
           INCLUDE_DUNDERS: ${{ github.event.inputs.include_dunders || 'false' }}
           INCLUDE_PRIVATE: ${{ github.event.inputs.include_private || 'false' }}
           OUT: stdlib_api_${{ matrix.os }}_py${{ matrix.python-version }}.jsonl
@@ -65,13 +55,12 @@ jobs:
           [ "$INCLUDE_DUNDERS" = "true" ] && flags+=(--include-dunders)
           [ "$INCLUDE_PRIVATE" = "true" ] && flags+=(--include-private)
           echo "running: tools/stdlib_introspect.py -o $OUT ${flags[*]}"
-          # The script writes its Markdown summary to $GITHUB_STEP_SUMMARY itself and
-          # trips the sanity gate (non-zero exit) on an implausibly small dump.
+          # The script writes the $GITHUB_STEP_SUMMARY summary and fails on a tiny dump.
           python tools/stdlib_introspect.py -o "$OUT" "${flags[@]}"
 
       - uses: actions/upload-artifact@v4
-        # Upload even if the sanity gate failed, so a broken cell is debuggable.
-        # Artifact names must be unique within a run (v4) -- include the matrix values.
+        # Upload even when the gate failed, for debugging; artifact names must be
+        # unique within a run, so include the matrix values.
         if: always()
         with:
           name: stdlib-api-${{ matrix.os }}-py${{ matrix.python-version }}
@@ -82,7 +71,7 @@ jobs:
   aggregate:
     name: aggregate union
     needs: [introspect]
-    if: always()   # union whatever cells succeeded, even if some failed
+    if: always()   # union whatever cells succeeded, even if some cells failed
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -95,13 +84,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: stdlib-api-*
-          merge-multiple: true   # all cell JSONLs land in one directory
+          merge-multiple: true
           path: cells
 
       - name: Merge + summarize
-        # Writes stdlib_api_union.jsonl + the top-level Markdown report to
-        # $GITHUB_STEP_SUMMARY (union size, per-cell counts, platform-exclusive
-        # APIs, Windows-only sample, version add/remove deltas).
         run: python tools/merge_summary.py cells -o stdlib_api_union.jsonl
 
       - uses: actions/upload-artifact@v4
