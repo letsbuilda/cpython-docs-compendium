@@ -17,8 +17,6 @@ Per-type dunders are excluded by default (the docs cover them in the data model
 section); --include-dunders keeps them, flagged with is_dunder=True.
 """
 
-from __future__ import annotations
-
 import argparse
 import contextlib
 import importlib
@@ -30,6 +28,13 @@ import pkgutil
 import platform
 import sys
 import warnings
+from collections import Counter
+from collections.abc import Iterator
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+type Record = dict[str, Any]
 
 # Modules with import-time side effects (browser/print) or that we never document.
 SKIP_MODULES = {
@@ -43,18 +48,23 @@ SKIP_MODULES = {
     "lib2to3",  # grammar/test heavy; removed in 3.13
 }
 TEST_PARTS = {"test", "tests"}
+TOP_MODULES = 12
+FAILED_PREVIEW = 18
+DOC_FIRSTLINE_LIMIT = 100
 
 
-def is_dunder(name):
-    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+def is_dunder(name: str) -> bool:
+    """Return whether ``name`` is a ``__dunder__`` (leading/trailing ``__`` around a non-empty body)."""
+    return len(name) > len("____") and name.startswith("__") and name.endswith("__")
 
 
-def is_private(name):
+def is_private(name: str) -> bool:
+    """Return whether ``name`` is private (``_``-prefixed and not a dunder)."""
     return name.startswith("_") and not is_dunder(name)
 
 
 @contextlib.contextmanager
-def _silenced():
+def _silenced() -> Iterator[None]:
     """Swallow stdout/stderr/warnings during risky imports."""
     sink = io.StringIO()
     with warnings.catch_warnings():
@@ -63,8 +73,9 @@ def _silenced():
             yield
 
 
-def safe_import(name):
-    short_name = name.split(".")[-1]
+def safe_import(name: str) -> ModuleType | None:
+    """Import ``name``, returning the module or ``None`` if it cannot be imported here."""
+    short_name = name.rpartition(".")[-1]
     if name in SKIP_MODULES or short_name in SKIP_MODULES:
         return None
     print(f"  importing {name}", flush=True)
@@ -77,20 +88,19 @@ def safe_import(name):
         return None
 
 
-def roster(include_private):
-    names = getattr(sys, "stdlib_module_names", None)
-    if not names:
-        sys.exit("Requires Python 3.10+ (needs sys.stdlib_module_names).")
-    seen = set()
-    for top_level in sorted(name for name in names if include_private or not name.startswith("_")):
+def roster(include_private: bool) -> Iterator[tuple[str, ModuleType | None]]:
+    """Yield (name, imported-module-or-None) for every stdlib module to document."""
+    seen: set[str] = set()
+    names = sorted(name for name in sys.stdlib_module_names if include_private or not name.startswith("_"))
+    for top_level in names:
         yield from _emit(top_level, include_private, seen)
 
 
-def _emit(name, include_private, seen):
+def _emit(name: str, include_private: bool, seen: set[str]) -> Iterator[tuple[str, ModuleType | None]]:
     if name in seen:
         return
     seen.add(name)
-    short_name = name.split(".")[-1]
+    short_name = name.rpartition(".")[-1]
     if name in SKIP_MODULES or short_name in SKIP_MODULES or short_name in TEST_PARTS:
         return
     module = safe_import(name)
@@ -102,7 +112,7 @@ def _emit(name, include_private, seen):
         except Exception:
             submodules = []
         for submodule in sorted(submodules):
-            submodule_short = submodule.split(".")[-1]
+            submodule_short = submodule.rpartition(".")[-1]
             # __main__ submodules are `python -m pkg` entry points, not API surface, and
             # importing them RUNS code (tkinter opens a Tk mainloop, asyncio starts a stdin
             # REPL). Never import them -- nor any other dunder-named submodule.
@@ -115,12 +125,13 @@ def _emit(name, include_private, seen):
             yield from _emit(submodule, include_private, seen)
 
 
-SEEN = {}  # id(obj) -> canonical qualname (first sighting)
-RECORDS = {}
-PENDING = {}  # id(obj) -> [alias qualnames seen before the canonical one]
+SEEN: dict[int, str] = {}  # id(obj) -> canonical qualname (first sighting)
+RECORDS: dict[str, Record] = {}
+PENDING: dict[int, list[str]] = {}  # id(obj) -> [alias qualnames seen before the canonical one]
 
 
-def kind_of(entity, in_class):
+def kind_of(entity: object, in_class: bool) -> str:
+    """Classify an entity as module/class/exception/property/descriptor/method/function/data."""
     if inspect.ismodule(entity):
         return "module"
     if isinstance(entity, type):
@@ -134,30 +145,36 @@ def kind_of(entity, in_class):
     return "data"
 
 
-def get_signature(entity):
-    try:
-        return str(inspect.signature(entity)), "inspect"
-    except ValueError, TypeError:
-        text_signature = getattr(entity, "__text_signature__", None)
-        return (text_signature, "text_signature") if text_signature else (None, "none")
+def get_signature(entity: object) -> tuple[str | None, str]:
+    """Return (signature_text, source) where source is ``inspect``/``text_signature``/``none``."""
+    if callable(entity):
+        try:
+            return str(inspect.signature(entity)), "inspect"
+        except ValueError, TypeError:
+            pass
+    text_signature = getattr(entity, "__text_signature__", None)
+    return (text_signature, "text_signature") if text_signature else (None, "none")
 
 
-def doc_info(entity):
+def doc_info(entity: object) -> tuple[bool, bool, str]:
+    """Return (has_own_doc, has_resolved_doc, first_line) for an entity."""
     has_own_doc = bool(getattr(entity, "__doc__", None))
     resolved_doc = inspect.getdoc(entity)
     first_line = ""
     if resolved_doc and resolved_doc.strip():
-        first_line = resolved_doc.strip().splitlines()[0][:100]
+        first_line = resolved_doc.strip().splitlines()[0][:DOC_FIRSTLINE_LIMIT]
     return has_own_doc, bool(resolved_doc), first_line
 
 
-def attach(canonical, alias):
+def attach(canonical: str, alias: str) -> None:
+    """Record ``alias`` as another name for the entity canonically known as ``canonical``."""
     existing = RECORDS.get(canonical)
     if existing is not None and alias != canonical and alias not in existing["aliases"]:
         existing["aliases"].append(alias)
 
 
-def note_alias(entity, qualname):
+def note_alias(entity: object, qualname: str) -> None:
+    """Remember ``qualname`` as an alias, attaching it once the canonical record exists."""
     try:
         object_id = id(entity)
     except Exception:
@@ -168,7 +185,8 @@ def note_alias(entity, qualname):
         PENDING.setdefault(object_id, []).append(qualname)
 
 
-def record(qualname, kind, module, parent, entity, short_name):
+def record(qualname: str, kind: str, module: str, parent: str, entity: object, short_name: str) -> None:
+    """Build and store the JSON record for one entity."""
     signature, signature_source = (
         get_signature(entity) if kind in {"function", "method", "class", "exception"} else (None, "n/a")
     )
@@ -188,7 +206,17 @@ def record(qualname, kind, module, parent, entity, short_name):
     }
 
 
-def process(entity, qualname, parent, module_name, short_name, in_class, include_dunders, include_private):
+def process(
+    entity: object,
+    qualname: str,
+    parent: str,
+    module_name: str,
+    short_name: str,
+    in_class: bool,
+    include_dunders: bool,
+    include_private: bool,
+) -> None:
+    """Record an entity (deduping re-exports by identity) and recurse into a class's members."""
     kind = kind_of(entity, in_class)
     if kind == "data":
         # Value-typed: identity is NOT meaningful (small ints / interned strings
@@ -201,7 +229,6 @@ def process(entity, qualname, parent, module_name, short_name, in_class, include
         attach(SEEN[object_id], qualname)  # re-export under another name
         return
     SEEN[object_id] = qualname
-    kind = kind_of(entity, in_class)
     record(qualname, kind, module_name, parent, entity, short_name)
     for alias in PENDING.pop(object_id, []):
         attach(qualname, alias)
@@ -222,7 +249,8 @@ def process(entity, qualname, parent, module_name, short_name, in_class, include
             )
 
 
-def walk_module(module, include_dunders, include_private):
+def walk_module(module: ModuleType, include_dunders: bool, include_private: bool) -> None:
+    """Record every own, non-imported member of a module."""
     module_name = module.__name__
     # vars() (not dir()+getattr) so we don't trigger lazy __getattr__ / property side effects.
     for name, value in sorted(vars(module).items()):
@@ -237,7 +265,8 @@ def walk_module(module, include_dunders, include_private):
         process(value, f"{module_name}.{name}", module_name, module_name, name, False, include_dunders, include_private)
 
 
-def main():
+def main() -> None:
+    """Parse arguments, introspect the stdlib, write the JSONL dump, and gate on size."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-o", "--output", default="stdlib_api.jsonl")
     parser.add_argument("--include-dunders", action="store_true")
@@ -256,7 +285,8 @@ def main():
     )
     args = parser.parse_args()
 
-    scanned, failed = 0, []
+    scanned = 0
+    failed: list[str] = []
     for name, module in roster(args.include_private):
         scanned += 1
         if module is None:
@@ -284,14 +314,14 @@ def main():
     records = sorted(RECORDS.values(), key=lambda entry: entry["qualname"])
     # Default encoding is cp1252 on Windows (crashes on non-ASCII docstrings) and text
     # mode there translates \n -> \r\n; pin UTF-8 + LF so every cell emits identical bytes.
-    with open(args.output, "w", encoding="utf-8", newline="\n") as out_file:
+    with Path(args.output).open("w", encoding="utf-8", newline="\n") as out_file:
         out_file.writelines(json.dumps(entry) + "\n" for entry in records)
 
     stats = _stats(records, scanned, failed)
     _text_summary(stats, args.output)
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if markdown_path:
-        _markdown_summary(stats, args.output, markdown_path)
+        _markdown_summary(stats, markdown_path)
 
     # Gate last, after the output and summaries are written, so a broken cell still
     # uploads its dump and renders a summary before the non-zero exit fails the job.
@@ -302,9 +332,7 @@ def main():
         )
 
 
-def _stats(records, scanned, failed):
-    from collections import Counter
-
+def _stats(records: list[Record], scanned: int, failed: list[str]) -> dict[str, Any]:
     callables = [entry for entry in records if entry["kind"] in {"function", "method"}]
     return {
         "total_records": len(records),
@@ -314,15 +342,15 @@ def _stats(records, scanned, failed):
         "total_callables": len(callables),
         "with_signature": sum(1 for entry in callables if entry["signature"]),
         "with_docstring": sum(1 for entry in records if entry["doc_resolved"]),
-        "by_module": Counter(entry["qualname"].split(".")[0] for entry in records),
+        "by_module": Counter(entry["qualname"].partition(".")[0] for entry in records),
     }
 
 
-def _percent(part, whole):
+def _percent(part: int, whole: int) -> str:
     return f"{100 * part // whole}%" if whole else "n/a"
 
 
-def _text_summary(stats, output_path):
+def _text_summary(stats: dict[str, Any], output_path: str) -> None:
     print("\n=== stdlib introspection summary =========================")
     print(f"Python {sys.version.split()[0]} on {sys.platform}")
     print(f"modules scanned        : {stats['scanned']}  ({len(stats['failed'])} not introspectable here)")
@@ -330,24 +358,26 @@ def _text_summary(stats, output_path):
     print("  by kind              : " + ", ".join(f"{kind}={count}" for kind, count in stats["kinds"].most_common()))
     if stats["total_callables"]:
         print(
-            f"callables w/ signature : {stats['with_signature']}/{stats['total_callables']}  ({_percent(stats['with_signature'], stats['total_callables'])})",
+            f"callables w/ signature : {stats['with_signature']}/{stats['total_callables']}  "
+            f"({_percent(stats['with_signature'], stats['total_callables'])})",
         )
     if stats["total_records"]:
         print(
-            f"entities w/ docstring  : {stats['with_docstring']}/{stats['total_records']}  ({_percent(stats['with_docstring'], stats['total_records'])})",
+            f"entities w/ docstring  : {stats['with_docstring']}/{stats['total_records']}  "
+            f"({_percent(stats['with_docstring'], stats['total_records'])})",
         )
-    print("\ntop 12 modules by entity count:")
-    for module_name, count in stats["by_module"].most_common(12):
+    print(f"\ntop {TOP_MODULES} modules by entity count:")
+    for module_name, count in stats["by_module"].most_common(TOP_MODULES):
         print(f"  {count:5d}  {module_name}")
     if stats["failed"]:
-        shown = ", ".join(stats["failed"][:18])
-        more = f"  (+{len(stats['failed']) - 18} more)" if len(stats["failed"]) > 18 else ""
+        shown = ", ".join(stats["failed"][:FAILED_PREVIEW])
+        more = f"  (+{len(stats['failed']) - FAILED_PREVIEW} more)" if len(stats["failed"]) > FAILED_PREVIEW else ""
         print(f"\nnot introspectable on this build ({len(stats['failed'])}): {shown}{more}")
     print(f"\nwrote {stats['total_records']} records -> {output_path}")
     print("=" * 58)
 
 
-def _markdown_summary(stats, output_path, summary_path):
+def _markdown_summary(stats: dict[str, Any], summary_path: str) -> None:
     python_version = sys.version.split()[0]
     lines = [
         f"## stdlib introspection — Python {python_version} on `{sys.platform}`",
@@ -361,17 +391,19 @@ def _markdown_summary(stats, output_path, summary_path):
     ]
     if stats["total_callables"]:
         lines.append(
-            f"| callables w/ signature | {stats['with_signature']}/{stats['total_callables']} ({_percent(stats['with_signature'], stats['total_callables'])}) |",
+            f"| callables w/ signature | {stats['with_signature']}/{stats['total_callables']} "
+            f"({_percent(stats['with_signature'], stats['total_callables'])}) |",
         )
     lines.append(
-        f"| entities w/ docstring | {stats['with_docstring']}/{stats['total_records']} ({_percent(stats['with_docstring'], stats['total_records'])}) |",
+        f"| entities w/ docstring | {stats['with_docstring']}/{stats['total_records']} "
+        f"({_percent(stats['with_docstring'], stats['total_records'])}) |",
     )
 
     lines += ["", "### Entities by kind", "", "| kind | count |", "| --- | --- |"]
     lines += [f"| {kind} | {count} |" for kind, count in stats["kinds"].most_common()]
 
     lines += ["", "### Top modules by entity count", "", "| module | entities |", "| --- | --- |"]
-    lines += [f"| `{module_name}` | {count} |" for module_name, count in stats["by_module"].most_common(12)]
+    lines += [f"| `{module_name}` | {count} |" for module_name, count in stats["by_module"].most_common(TOP_MODULES)]
 
     failed = stats["failed"]
     lines += ["", f"### Not introspectable on this build ({len(failed)})", ""]
@@ -380,7 +412,7 @@ def _markdown_summary(stats, output_path, summary_path):
 
     # Append: $GITHUB_STEP_SUMMARY is an append target, and the file is fresh per step.
     # newline="\n" keeps the summary byte-identical on the Windows runner.
-    with open(summary_path, "a", encoding="utf-8", newline="\n") as summary_file:
+    with Path(summary_path).open("a", encoding="utf-8", newline="\n") as summary_file:
         summary_file.write("\n".join(lines) + "\n")
 
 
