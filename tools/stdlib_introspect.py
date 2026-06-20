@@ -92,7 +92,12 @@ def _emit(name, include_private, seen):
             submodules = []
         for submodule in sorted(submodules):
             submodule_short = submodule.split(".")[-1]
-            if (is_private(submodule_short) and not include_private) or submodule_short in TEST_PARTS:
+            # __main__ submodules are `python -m pkg` entry points, not API surface, and
+            # importing them RUNS code (tkinter opens a Tk mainloop, asyncio starts a stdin
+            # REPL). Never import them -- nor any other dunder-named submodule.
+            if (is_dunder(submodule_short)
+                    or (is_private(submodule_short) and not include_private)
+                    or submodule_short in TEST_PARTS):
                 continue
             yield from _emit(submodule, include_private, seen)
 
