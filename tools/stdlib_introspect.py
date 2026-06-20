@@ -57,8 +57,7 @@ def safe_import(name):
     short_name = name.split(".")[-1]
     if name in SKIP_MODULES or short_name in SKIP_MODULES:
         return None
-    if os.environ.get("TRACE_IMPORTS"):
-        print(f"  importing {name}", file=sys.stderr, flush=True)
+    print(f"  importing {name}", flush=True)
     try:
         with _silenced():
             return importlib.import_module(name)
@@ -208,13 +207,7 @@ def main():
     parser.add_argument("--min-entities", type=int, default=5000,
                         help="sanity gate: exit non-zero if fewer than N records were "
                              "produced (a near-empty dump means the build is broken)")
-    parser.add_argument("--watchdog", type=int, default=int(os.environ.get("WATCHDOG_SECONDS", "0")),
-                        help="if >0: dump all thread stacks and abort after N seconds "
-                             "(a stdlib module that HANGS on import can't be caught by try/except)")
     args = parser.parse_args()
-    if args.watchdog > 0:
-        import faulthandler
-        faulthandler.dump_traceback_later(args.watchdog, exit=True)
 
     scanned, failed = 0, []
     for name, module in roster(args.include_private):
@@ -250,13 +243,9 @@ def main():
 
     # Gate last, after the output and summaries are written, so a broken cell still
     # uploads its dump and renders a summary before the non-zero exit fails the job.
-    sys.stdout.flush(); sys.stderr.flush()
     if len(records) < args.min_entities:
-        print(f"\nSANITY GATE: only {len(records)} records "
-              f"(< --min-entities {args.min_entities}); this build looks broken.",
-              file=sys.stderr, flush=True)
-        os._exit(1)
-    os._exit(0)
+        sys.exit(f"\nSANITY GATE: only {len(records)} records (< --min-entities "
+                 f"{args.min_entities}); this build looks broken.")
 
 def _stats(records, scanned, failed):
     from collections import Counter
