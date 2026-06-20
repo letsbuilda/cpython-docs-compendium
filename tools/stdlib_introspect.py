@@ -57,7 +57,7 @@ def safe_import(name):
     short_name = name.split(".")[-1]
     if name in SKIP_MODULES or short_name in SKIP_MODULES:
         return None
-    print(f"  importing {name}", file=sys.stderr, flush=True)
+    print(f"  importing {name}", flush=True)
     try:
         with _silenced():
             return importlib.import_module(name)
