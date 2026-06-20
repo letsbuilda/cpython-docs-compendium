@@ -87,7 +87,6 @@ def load_union(path):
 
 
 def http_get(url, attempts=4):
-    last_error = None
     for attempt in range(attempts):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "coverage-diff"})
@@ -95,10 +94,11 @@ def http_get(url, attempts=4):
                 return response.read()
         except urllib.error.HTTPError:
             raise                              # 4xx/5xx: caller decides (404 -> dev fallback)
-        except urllib.error.URLError as error:
-            last_error = error
+        except urllib.error.URLError:
+            if attempt == attempts - 1:
+                raise
             time.sleep(2 ** attempt)
-    raise last_error
+    raise ValueError("attempts must be >= 1")
 
 
 def documented_names(version, inventory_dir=None):
@@ -177,7 +177,7 @@ def backlog_records(surface, backlog):
             "module": normalize_module(record["module"]),
             "signature": record.get("signature"),
             "has_docstring": bool(record.get("doc_resolved")),
-            "is_constant": record["kind"] == "data",
+            "is_data": record["kind"] == "data",
         })
     rows.sort(key=lambda row: (row["module"], row["qualname"]))
     return rows
@@ -243,16 +243,17 @@ def _sample_table(lines, title, header, names):
 
 
 def report(versions, results, target, backlog_rows, docs_only, output_path, backlog_path, args):
-    constants = sum(1 for row in backlog_rows if row["is_constant"])
+    data_entries = sum(1 for row in backlog_rows if row["is_data"])
     lines = ["# stdlib documentation coverage", ""]
     if not versions:
-        lines += ["> **No versions found in the union.** The aggregate step produced no "
-                  "cells, or the union schema is missing `cells`.", ""]
+        no_versions = ("> **No versions found in the union.** The aggregate step produced "
+                       "no cells, or the union schema is missing `cells`.")
+        lines += [no_versions, ""]
     else:
-        lines += [f"Target version (backlog): **{target}**.", "",
-                  "Coverage = introspected surface ∩ docs.python.org `py` inventory, per minor "
-                  "(OS-unioned). The inventory has no version metadata; added/removed deltas come "
-                  "from the matrix, not from here.", "",
+        intro = ("Coverage = introspected surface ∩ docs.python.org `py` inventory, per "
+                 "minor (OS-unioned). The inventory has no version metadata; added/removed "
+                 "deltas come from the matrix, not from here.")
+        lines += [f"Target version (backlog): **{target}**.", "", intro, "",
                   "## Coverage by version", "",
                   "| version | surface | covered | backlog | docs-only | coverage |",
                   "| --- | ---: | ---: | ---: | ---: | ---: |"]
@@ -264,8 +265,8 @@ def report(versions, results, target, backlog_rows, docs_only, output_path, back
         lines.append("")
 
         lines += [f"## Target backlog — {target} ({len(backlog_rows)} undocumented)", "",
-                  f"Reference-entry core (callables/classes/etc.): **{len(backlog_rows) - constants}**; "
-                  f"constants (`data`): **{constants}**.", "",
+                  f"Reference-entry core (callables/classes/etc.): **{len(backlog_rows) - data_entries}**; "
+                  f"`data` entries: **{data_entries}**.", "",
                   "| kind | count |", "| --- | ---: |"]
         for kind, count in Counter(row["kind"] for row in backlog_rows).most_common():
             lines.append(f"| {kind} | {count} |")
@@ -282,9 +283,10 @@ def report(versions, results, target, backlog_rows, docs_only, output_path, back
         lines.append("")
 
         if docs_only:
-            lines += [f"## Docs-only — {target} ({len(docs_only)})", "",
-                      "In the inventory but not introspected: removed/renamed API the docs still "
-                      "list, or names this run failed to enumerate (normalization QA signal).", ""]
+            docs_only_note = ("In the inventory but not introspected: removed/renamed API the "
+                              "docs still list, or names this run failed to enumerate "
+                              "(normalization QA signal).")
+            lines += [f"## Docs-only — {target} ({len(docs_only)})", "", docs_only_note, ""]
             _sample_table(lines, "Sample", "name", docs_only)
 
     markdown_path = args.md_summary or os.environ.get("GITHUB_STEP_SUMMARY")
@@ -295,7 +297,7 @@ def report(versions, results, target, backlog_rows, docs_only, output_path, back
     print("\n=== coverage summary =====================================")
     if versions:
         print(f"target {target}; versions: {', '.join(versions)}")
-        print(f"target backlog: {len(backlog_rows)} undocumented ({constants} constants)")
+        print(f"target backlog: {len(backlog_rows)} undocumented ({data_entries} data)")
     else:
         print("no versions found in union")
     print(f"wrote {output_path} and {backlog_path}")
