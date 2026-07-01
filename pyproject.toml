@@ -13,11 +13,11 @@ dependencies = [
 dev = [
     # DX
     "nox>=2026.4.10",
-    "prek>=0.4.4",
+    "prek>=0.4.5",
     # Linters
-    "ruff>=0.15.17",
+    "ruff>=0.15.19",
     "mypy>=2.1.0",
-    "ty>=0.0.49",
+    "ty>=0.0.53",
 ]
 
 [tool.uv]
