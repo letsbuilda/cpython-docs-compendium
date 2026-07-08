@@ -16,9 +16,11 @@ added/removed -- those deltas come from the matrix (merge_summary.py), not here.
 """
 
 import argparse
+import functools
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -33,6 +35,8 @@ type Record = dict[str, Any]
 INVENTORY_URL = "https://docs.python.org/{version}/objects.inv"
 DEV_INVENTORY_URL = "https://docs.python.org/dev/objects.inv"
 HTTP_NOT_FOUND = 404
+HTTP_TOO_MANY_REQUESTS = 429
+HTTP_SERVER_ERROR = 500
 
 # Introspected prefix -> docs-canonical prefix. The docs index posix|nt as os.*,
 # posixpath|ntpath|genericpath as os.path.*, and builtins members unprefixed.
@@ -54,7 +58,7 @@ MODULE_ALIASES = {
     "nt": "os",
 }
 
-CELL_VERSION = re.compile(r"-py([0-9][^-]*)$")
+CELL_VERSION = re.compile(r"-py([0-9].*)$")  # version_label() canonicalizes hyphenated specs (3.15-dev)
 TOP_MODULES = 15
 
 
@@ -69,6 +73,7 @@ def version_label(version: str) -> str:
     return ".".join(str(part) for part in version_key(version))
 
 
+@functools.cache  # hot path: called per cell per record per version pass; only ~18 distinct ids exist
 def cell_version(cell: str) -> str | None:
     """Extract the ``X.Y`` minor from a ``...-py3.14`` cell id, or ``None``."""
     match = CELL_VERSION.search(cell)
@@ -107,7 +112,7 @@ def load_union(path: str) -> list[Record]:
 
 
 def http_get(url: str, attempts: int = 4) -> bytes:
-    """GET ``url``, retrying transient URL errors with exponential backoff."""
+    """GET ``url``, retrying transient URL/server errors (5xx, 429) with exponential backoff."""
     if attempts < 1:
         message = "attempts must be >= 1"
         raise ValueError(message)
@@ -117,8 +122,12 @@ def http_get(url: str, attempts: int = 4) -> bytes:
             with urllib.request.urlopen(request, timeout=30) as response:
                 body: bytes = response.read()
                 return body
-        except urllib.error.HTTPError:
-            raise  # 4xx/5xx: caller decides (404 -> dev fallback)
+        except urllib.error.HTTPError as error:
+            # Client errors are the caller's to interpret (404 -> dev fallback); a transient
+            # 5xx/429 must not abort the whole nightly run, so those retry like URLErrors.
+            if (error.code < HTTP_SERVER_ERROR and error.code != HTTP_TOO_MANY_REQUESTS) or attempt == attempts - 1:
+                raise
+            time.sleep(2**attempt)
         except urllib.error.URLError:
             if attempt == attempts - 1:
                 raise
@@ -249,6 +258,19 @@ def main() -> None:
         key=version_key,
     )
 
+    # Resolve the target up front and refuse one with no cells in the union: silently writing
+    # an empty gap that reads as "0 undocumented" is exactly the failure mode to avoid.
+    target: str | None
+    if args.target_version:
+        target = version_label(args.target_version)
+        if target not in versions:
+            sys.exit(
+                f"--target-version {args.target_version!r} (normalized to {target!r}) is not in "
+                f"the union; versions present: {', '.join(versions) or 'none'}.",
+            )
+    else:
+        target = default_target(versions) if versions else None
+
     results: dict[str, Record] = {}
     surfaces: dict[str, dict[str, Record]] = {}
     gaps: dict[str, set[str]] = {}
@@ -264,7 +286,6 @@ def main() -> None:
             f"({summary['coverage_pct']}%)" + flag,
         )
 
-    target = args.target_version or (default_target(versions) if versions else None)
     target_surface = surfaces.get(target, {}) if target else {}
     target_missing = gaps.get(target, set()) if target else set()
     target_docs_only = docs_onlys.get(target, set()) if target else set()
@@ -274,12 +295,19 @@ def main() -> None:
         json.dump(coverage, out_file, indent=2)
         out_file.write("\n")
 
-    gap_path = args.gap_out or f"official_docs_gap_{target}.jsonl"
     rows = gap_records(target_surface, target_missing)
-    with Path(gap_path).open("w", encoding="utf-8", newline="\n") as out_file:
-        out_file.writelines(json.dumps(row) + "\n" for row in rows)
+    gap_path = None
+    if target is not None:
+        gap_path = args.gap_out or f"official_docs_gap_{target}.jsonl"
+        with Path(gap_path).open("w", encoding="utf-8", newline="\n") as out_file:
+            out_file.writelines(json.dumps(row) + "\n" for row in rows)
 
     report(versions, results, target, rows, target_docs_only, args.output, gap_path, args)
+
+    # Gate last, after the outputs and summaries, mirroring stdlib_introspect: the report
+    # says "no versions" loudly, and the job must go red rather than publish nothing.
+    if target is None:
+        sys.exit("SANITY GATE: no versions found in the union -- nothing to diff.")
 
 
 def report(
@@ -289,7 +317,7 @@ def report(
     gap_rows: list[Record],
     docs_only: set[str],
     output_path: str,
-    gap_path: str,
+    gap_path: str | None,
     args: argparse.Namespace,
 ) -> None:
     """Render the run as a Markdown report and a console summary."""
@@ -375,7 +403,7 @@ def report(
         print(f"official docs gap: {len(gap_rows)} undocumented ({data_entries} data)")
     else:
         print("no versions found in union")
-    print(f"wrote {output_path} and {gap_path}")
+    print(f"wrote {output_path}" + (f" and {gap_path}" if gap_path else ""))
     print("=" * 58)
 
 
