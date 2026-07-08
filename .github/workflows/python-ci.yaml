@@ -9,9 +9,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -30,7 +35,9 @@ jobs:
           python-version-file: "pyproject.toml"
 
       - name: Sync dependencies
-        run: uv sync
+        # --locked: fail on a stale uv.lock instead of silently re-locking it, which would
+        # neutralize the uv-lock prek hook that runs right after.
+        run: uv sync --locked
 
       - name: Run prek
         run: uv run prek run --all-files

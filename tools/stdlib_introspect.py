@@ -42,6 +42,7 @@ SKIP_MODULES = {
     "this",  # prints the Zen of Python
     "__hello__",
     "__phello__",  # print on import
+    "__main__",  # importing it returns the running introspection script itself
     "test",  # CPython's own test suite
     "idlelib",  # the IDLE GUI app
     "turtledemo",  # demo scripts
@@ -91,7 +92,8 @@ def safe_import(name: str) -> ModuleType | None:
 def roster(include_private: bool) -> Iterator[tuple[str, ModuleType | None]]:
     """Yield (name, imported-module-or-None) for every stdlib module to document."""
     seen: set[str] = set()
-    names = sorted(name for name in sys.stdlib_module_names if include_private or not name.startswith("_"))
+    # is_private, not startswith("_"), so documented dunder modules (__future__) stay in.
+    names = sorted(name for name in sys.stdlib_module_names if include_private or not is_private(name))
     for top_level in names:
         yield from _emit(top_level, include_private, seen)
 
@@ -127,7 +129,11 @@ def _emit(name: str, include_private: bool, seen: set[str]) -> Iterator[tuple[st
 
 SEEN: dict[int, str] = {}  # id(obj) -> canonical qualname (first sighting)
 RECORDS: dict[str, Record] = {}
-PENDING: dict[int, list[str]] = {}  # id(obj) -> [alias qualnames seen before the canonical one]
+PendingName: TypeAlias = tuple[str, str, str, str, bool]  # (qualname, module, parent, short_name, in_class)
+# id(obj) -> (entity, [names seen before any canonical record]). Attached as aliases once a
+# canonical record exists; entities whose defining module is never walked (private C modules
+# like _functools) are promoted to canonical records by flush_pending() after the walk.
+PENDING: dict[int, tuple[Any, list[PendingName]]] = {}
 
 
 def kind_of(entity: object, in_class: bool) -> str:
@@ -148,7 +154,9 @@ def kind_of(entity: object, in_class: bool) -> str:
 def get_signature(entity: object) -> tuple[str | None, str]:
     """Return (signature_text, source) where source is ``inspect``/``text_signature``/``none``."""
     if callable(entity):
-        with contextlib.suppress(ValueError, TypeError):
+        # Exception, not just ValueError/TypeError: signature() evaluates __text_signature__
+        # defaults, which can raise anything (select.epoll.register -> AttributeError).
+        with contextlib.suppress(Exception):
             return str(inspect.signature(entity)), "inspect"
     text_signature = getattr(entity, "__text_signature__", None)
     return (text_signature, "text_signature") if text_signature else (None, "none")
@@ -156,7 +164,17 @@ def get_signature(entity: object) -> tuple[str | None, str]:
 
 def doc_info(entity: object) -> tuple[bool, bool, str]:
     """Return (has_own_doc, has_resolved_doc, first_line) for an entity."""
-    has_own_doc = bool(getattr(entity, "__doc__", None))
+    entity_doc = getattr(entity, "__doc__", None)
+    if (
+        entity_doc is not None
+        and not isinstance(entity, type)
+        and not inspect.ismodule(entity)
+        and entity_doc == getattr(type(entity), "__doc__", None)
+    ):
+        # Plain values (math.pi, errno.E2BIG) reach their type's docstring through attribute
+        # lookup; that documents the type, not the entity.
+        return False, False, ""
+    has_own_doc = bool(entity_doc)
     resolved_doc = inspect.getdoc(entity)
     first_line = ""
     if resolved_doc and resolved_doc.strip():
@@ -171,19 +189,16 @@ def attach(canonical: str, alias: str) -> None:
         existing["aliases"].append(alias)
 
 
-def note_alias(entity: object, qualname: str) -> None:
-    """Remember ``qualname`` as an alias, attaching it once the canonical record exists."""
-    try:
-        object_id = id(entity)
-    except Exception:
-        return
+def note_alias(entity: object, qualname: str, module: str, parent: str, short_name: str, in_class: bool) -> None:
+    """Remember a non-canonical name: attached as an alias now or later, or promoted at flush time."""
+    object_id = id(entity)
     if object_id in SEEN:
         attach(SEEN[object_id], qualname)
     else:
-        PENDING.setdefault(object_id, []).append(qualname)
+        PENDING.setdefault(object_id, (entity, []))[1].append((qualname, module, parent, short_name, in_class))
 
 
-def record(qualname: str, kind: str, module: str, parent: str, entity: object, short_name: str) -> None:
+def record(qualname: str, kind: str, module: str, parent: str | None, entity: object, short_name: str) -> None:
     """Build and store the JSON record for one entity."""
     signature, signature_source = (
         get_signature(entity) if kind in {"function", "method", "class", "exception"} else (None, "n/a")
@@ -194,7 +209,8 @@ def record(qualname: str, kind: str, module: str, parent: str, entity: object, s
         "kind": kind,
         "module": module,
         "parent": parent,
-        "is_dunder": is_dunder(short_name),
+        # Dunder-named modules (__future__) are documented modules, not data-model dunders.
+        "is_dunder": kind != "module" and is_dunder(short_name),
         "signature": signature,
         "sig_source": signature_source,
         "doc_own": has_own_doc,
@@ -215,6 +231,8 @@ def process(
     include_private: bool,
 ) -> None:
     """Record an entity (deduping re-exports by identity) and recurse into a class's members."""
+    if isinstance(entity, (staticmethod, classmethod)):
+        entity = entity.__func__  # vars() yields the raw wrapper, which hides the signature/doc
     kind = kind_of(entity, in_class)
     if kind == "data":
         # Value-typed: identity is NOT meaningful (small ints / interned strings
@@ -228,15 +246,29 @@ def process(
         return
     SEEN[object_id] = qualname
     record(qualname, kind, module_name, parent, entity, short_name)
-    for alias in PENDING.pop(object_id, []):
+    _, pending_names = PENDING.pop(object_id, (None, []))
+    for alias, *_ in pending_names:
         attach(qualname, alias)
     # Recurse into a class's OWN members only (mirrors "document where defined").
     if kind in {"class", "exception"}:
+        own_qualname = getattr(entity, "__qualname__", None)
         for child_name, child_value in sorted(vars(entity).items()):
             if (is_dunder(child_name) and not include_dunders) or (is_private(child_name) and not include_private):
                 continue
+            child = child_value.__func__ if isinstance(child_value, (staticmethod, classmethod)) else child_value
+            child_qualname = getattr(child, "__qualname__", None)
+            if (
+                own_qualname is not None
+                and child_qualname is not None
+                and (isinstance(child, type) or inspect.isroutine(child))
+                and child_qualname != f"{own_qualname}.{child_name}"
+            ):
+                # A reference to something defined elsewhere (HTTPConnection.response_class
+                # -> HTTPResponse): alias it rather than let it steal canonical identity.
+                note_alias(child, f"{qualname}.{child_name}", module_name, qualname, child_name, True)
+                continue
             process(
-                child_value,
+                child,
                 f"{qualname}.{child_name}",
                 qualname,
                 module_name,
@@ -247,20 +279,48 @@ def process(
             )
 
 
-def walk_module(module: ModuleType, include_dunders: bool, include_private: bool) -> None:
-    """Record every own, non-imported member of a module."""
+def walk_module(module: ModuleType, include_dunders: bool, include_private: bool) -> list[str]:
+    """Record every own, non-imported member of a module; return the members that failed."""
     module_name = module.__name__
+    failures: list[str] = []
     # vars() (not dir()+getattr) so we don't trigger lazy __getattr__ / property side effects.
     for name, value in sorted(vars(module).items()):
         if (is_dunder(name) and not include_dunders) or (is_private(name) and not include_private):
             continue
         if inspect.ismodule(value):  # imported module ref (ast.sys, os.path); roster handles real modules
             continue
-        owner = getattr(value, "__module__", None)
-        if owner is not None and owner != module_name:
-            note_alias(value, f"{module_name}.{name}")  # imported from elsewhere
-            continue
-        process(value, f"{module_name}.{name}", module_name, module_name, name, False, include_dunders, include_private)
+        try:
+            owner = getattr(value, "__module__", None)
+            # Identity-based aliasing is meaningless for value types (data), so a re-exported
+            # value is recorded under the re-exporting module instead of note_alias'd.
+            if owner is not None and owner != module_name and kind_of(value, False) != "data":
+                note_alias(value, f"{module_name}.{name}", module_name, module_name, name, False)
+                continue
+            process(
+                value,
+                f"{module_name}.{name}",
+                module_name,
+                module_name,
+                name,
+                False,
+                include_dunders,
+                include_private,
+            )
+        except Exception as error:  # one poisoned member must not sink its siblings
+            failures.append(f"{module_name}.{name} ({error!r})")
+    return failures
+
+
+def flush_pending(include_dunders: bool, include_private: bool) -> None:
+    """Promote pending names whose canonical entity was never walked (private C modules)."""
+    # process() pops the flushed entry and attaches its remaining names as aliases; walking a
+    # promoted class can park new children in PENDING, so drain until stable. The extra pop is
+    # belt-and-braces so the loop always shrinks even if process() takes an unexpected path.
+    while PENDING:
+        object_id, (entity, names) = next(iter(PENDING.items()))
+        qualname, module_name, parent, short_name, in_class = names[0]
+        process(entity, qualname, parent, module_name, short_name, in_class, include_dunders, include_private)
+        PENDING.pop(object_id, None)
 
 
 def main() -> None:
@@ -290,24 +350,14 @@ def main() -> None:
         if module is None:
             failed.append(name)
             continue
-        has_own_doc, has_resolved_doc, first_line = doc_info(module)
-        RECORDS[name] = {
-            "qualname": name,
-            "kind": "module",
-            "module": name,
-            "parent": name.rpartition(".")[0] or None,
-            "is_dunder": False,
-            "signature": None,
-            "sig_source": "n/a",
-            "doc_own": has_own_doc,
-            "doc_resolved": has_resolved_doc,
-            "doc_firstline": first_line,
-            "aliases": [],
-        }
+        record(name, "module", name, name.rpartition(".")[0] or None, module, name.rpartition(".")[-1])
         try:
-            walk_module(module, args.include_dunders, args.include_private)
+            failed.extend(walk_module(module, args.include_dunders, args.include_private))
         except Exception as error:
             failed.append(f"{name} (walk: {error!r})")
+    # Re-exports whose defining module was never walked (functools.reduce lives in the
+    # private _functools) would otherwise vanish: promote them to canonical records now.
+    flush_pending(args.include_dunders, args.include_private)
 
     records = sorted(RECORDS.values(), key=lambda entry: entry["qualname"])
     # Default encoding is cp1252 on Windows (crashes on non-ASCII docstrings) and text
