@@ -32,11 +32,9 @@ def lints(session: nox.Session) -> None:
 @nox.session
 def clean(_: nox.Session) -> None:
     """Clean cache, .pyc, .pyo, and test/build artifact files from project."""
-    count = 0
     for searchpath in CLEANABLE_TARGETS:
         for filepath in Path().glob(searchpath):
             if filepath.is_dir():
                 shutil.rmtree(filepath)
             else:
                 filepath.unlink()
-            count += 1
