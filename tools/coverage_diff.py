@@ -127,6 +127,7 @@ def http_get(url: str, attempts: int = 4) -> bytes:
             # 5xx/429 must not abort the whole nightly run, so those retry like URLErrors.
             if (error.code < HTTP_SERVER_ERROR and error.code != HTTP_TOO_MANY_REQUESTS) or attempt == attempts - 1:
                 raise
+            error.close()  # release the held response instead of leaving it to the GC
             time.sleep(2**attempt)
         except urllib.error.URLError:
             if attempt == attempts - 1:
